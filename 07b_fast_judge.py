@@ -1,36 +1,41 @@
 """
-Eval type 7, variant b: a fast typed judge.
+Eval type 7, second version: the same marking, done in a fraction of a second.
 
-07_llm_judge.py asks a large model to read an output and write a verdict.
-That works, but each call takes seconds and costs real money, so people run
-the judge once on a handful of cases and call it done. This file asks the
-same questions to a System One model (Jev, from TypeSafe), which does not
-generate text at all. You hand it the state and a yes/no question and it
-returns the probability that the answer is yes, in a fraction of a second,
-for a fraction of a cent. Ask it three questions on sixteen outputs and you
-are done before the LLM judge has finished its first.
+07_llm_judge.py hands each answer to a big model and waits for it to read the
+thing and write out a verdict. That works. It also takes seconds per answer and
+costs real money, which is why most people run a marker like that on a handful
+of cases once and call the job done.
 
-Two things change when the judge is this cheap:
+This script asks the same three questions of a different kind of model. Jev,
+from TypeSafe, does not write anything. You give it some text and a yes-or-no
+question, and it hands back the chance that the answer is yes. A tenth of a
+second, a fraction of a penny. Three questions across sixteen answers finish
+before the big model has got through its first one.
 
-  1. You can afford to grade everything, every run. A rubric that costs
-     nothing to apply becomes a regression test instead of a spot check.
-  2. You get a probability, not a verdict. A 0.95 and a 0.55 both round to
-     "yes", but they are not the same answer. Log the number, choose the
-     threshold in code, and move it when the stakes change.
+Two things change once marking is that cheap.
 
-The catch is the same as for any judge: it has to be calibrated before you
-trust it. This file does that two ways. Known-bad outputs must score low,
-and every verdict is compared with the LLM judge's verdict on the same
-output. Where two independent judges disagree, one of them is wrong, and a
-human should look. Agreement between judges of different families is far
-stronger evidence than either judge alone.
+You can mark everything, every time. A checklist that costs nothing to apply
+stops being an occasional spot check and becomes something you run on every
+change.
 
-Needs TYPESAFE_API_KEY in the environment or in .env. Reads the rows that
-06_ab_comparison.py saved and, if present, the verdicts 07_llm_judge.py
-saved. Run 06 first; 07 is optional but makes the comparison possible.
+You get a number instead of a verdict. 0.95 and 0.55 both round to yes, but
+they are nowhere near the same answer. Keep the number, decide in code where
+the line sits, and move that line when the stakes change.
+
+The catch is the same as for any marker: prove it works before you believe it.
+This script does that twice over. Answers known to be bad have to score low.
+And every verdict gets compared against what the big model said about the same
+answer. Where two markers built on completely different technology disagree,
+one of them is wrong and a person should go and look. Two independent markers
+agreeing is far better evidence than either one on its own.
+
+Needs TYPESAFE_API_KEY in your environment or in a .env file. Reads what
+06_ab_comparison.py saved, and the verdicts from 07_llm_judge.py if they exist.
+Run 06 first. 07 is optional, but without it there is nothing to compare
+against.
 
 Run:  python 07b_fast_judge.py
-Writes results/07b_fast_judge.jsonl.
+Saves results/07b_fast_judge.jsonl.
 """
 
 from __future__ import annotations
@@ -58,8 +63,9 @@ from skill_eval_common import (
     table,
 )
 
-# The same three properties 07 asks about, phrased as yes/no questions.
-# Keep each one narrow: one property per question, and say what "yes" means.
+# The same three things 07 asks about, worded as yes-or-no questions. Each one
+# asks about a single property and spells out what a yes means, because a vague
+# question gets a vague number back.
 ASSERTIONS = {
     "imperative_subject": "Is the subject line (the first line) written in the imperative mood, "
                           "like \"add\" or \"fix\", rather than past tense or a noun phrase?",
@@ -67,14 +73,15 @@ ASSERTIONS = {
     "standalone_body": "Would the body make sense to someone reading only the git log later, "
                        "without the diff or the conversation in front of them?",
 }
-# 07 numbers its assertions 1, 2, 3 in the same order; this maps ours onto those.
+# 07 numbers its questions 1, 2 and 3 in this same order. This lines ours up
+# with those so the two markers can be compared question by question.
 LLM_JUDGE_NUMBER = {"imperative_subject": 1, "explains_why": 2, "standalone_body": 3}
-PASS_THRESHOLD = 0.5      # probability of "yes" at or above this counts as PASS
+PASS_THRESHOLD = 0.5      # a chance of yes at or above this counts as a pass
 
 
-# Typed replies. The SDK fills a SystemOneResponse subclass whose field names
-# match the question ids, so a typo in a key fails at validation instead of
-# at a KeyError three lines later.
+# The shapes the answers come back in. The SDK fills in a class whose field
+# names match the question names, so a typo in a name fails immediately with a
+# clear complaint rather than three lines later with a confusing one.
 class RubricAnswers(SystemOneResponse):
     imperative_subject: NoulAnswer = Field(description="Probability of yes to: " + ASSERTIONS["imperative_subject"])
     explains_why: NoulAnswer = Field(description="Probability of yes to: " + ASSERTIONS["explains_why"])
@@ -86,20 +93,47 @@ class PairAnswer(SystemOneResponse):
 
 
 def judge_rubric(client: TypeSafeClient, commit_message: str) -> dict[str, float]:
-    """One request, three questions, three probabilities."""
+    """Ask all three checklist questions about one message at once.
+
+    Args:
+        client: A connected TypeSafe client.
+        commit_message: The message to mark.
+
+    Returns:
+        The chance of a yes for each question, from 0 to 1, keyed by question
+        name. The raw number, not a pass or fail. The caller decides where the
+        line sits.
+
+    Example:
+        chances = judge_rubric(client, run["final_text"])
+    """
     questions = {name: Noul(instructions=text) for name, text in ASSERTIONS.items()}
-    # >>> LIVE CALL: one HTTP request to TypeSafe's Jev model. It answers the
-    #     three yes/no questions with probabilities; no text is generated.
+    # >>> THIS SPENDS MONEY, but barely. One request to TypeSafe's Jev model.
+    #     It answers all three yes-or-no questions with a number each, and
+    #     writes nothing.
     result = client.system_one({"commit_message": commit_message}, questions, response_model=RubricAnswers)
     probabilities = {name: getattr(result, name).noul for name in ASSERTIONS}
-    log.info("  fast judge: %s", {name: round(p, 2) for name, p in probabilities.items()})
+    log.info("  how likely each answer is a yes: %s", {name: round(p, 2) for name, p in probabilities.items()})
     return probabilities
 
 
 def judge_pair(client: TypeSafeClient, first: str, second: str, house_style: str) -> tuple[str, float]:
-    """Which of two messages follows the house style better? Returns the
-    winner ("A", "B" or "tie") and the model's confidence in that pick."""
-    # >>> LIVE CALL: one HTTP request to Jev with both responses in the state.
+    """Ask which of two messages follows the house rules better.
+
+    Args:
+        client: A connected TypeSafe client.
+        first: The message shown as A.
+        second: The message shown as B.
+        house_style: The rules to judge against, taken from the skill itself.
+
+    Returns:
+        The winner, "A", "B" or "tie", and how sure the model was about it.
+
+    Example:
+        winner, sure = judge_pair(client, with_skill, without_skill, style)
+    """
+    # >>> THIS SPENDS MONEY, but barely. One request to Jev with both messages
+    #     in it.
     result = client.system_one(
         {"house_style": house_style, "response_a": first, "response_b": second},
         {"better": Choice(
@@ -112,62 +146,72 @@ def judge_pair(client: TypeSafeClient, first: str, second: str, house_style: str
         response_model=PairAnswer,
     )
     answer = result.better
-    log.info("  pairwise: %s (confidence %.2f, probabilities %s)", answer.choice, answer.confidence,
+    log.info("  pairwise winner %s, %.0f%% sure. Full breakdown: %s", answer.choice, answer.confidence * 100,
              {k: round(v, 2) for k, v in answer.probabilities.items()})
     return answer.choice, answer.confidence
 
 
 def sanity_check(client: TypeSafeClient) -> None:
-    """Known negatives must score low on every assertion."""
-    section("fast judge sanity check")
-    explain("Before trusting any judge, feed it outputs that must fail: an empty reply and an 'I don't know'. "
-            "Every probability has to come back below 0.5. A judge that passes an empty string would pass "
-            "anything, and every number after this point would be meaningless.")
-    log.info("sanity-checking the fast judge on two known-bad outputs")
+    """Prove the marker rejects rubbish before trusting anything it passes.
+
+    Args:
+        client: A connected TypeSafe client.
+
+    Raises:
+        SystemExit: Something obviously bad scored above the pass line. Reword
+            the questions before spending anything on real marking.
+    """
+    section("checking the marker itself")
+    explain("Before trusting any marker, feed it answers that have to fail: an empty reply, and an 'I don't "
+            "know'. Every number has to come back below 0.5. A marker that passes an empty string would pass "
+            "anything, and every figure after this point would mean nothing.")
+    log.info("before marking anything real, feeding the marker two answers that are obviously wrong")
     for bad in ["", "I don't know how to write commit messages, sorry."]:
         probabilities = judge_rubric(client, bad)
         if any(p >= PASS_THRESHOLD for p in probabilities.values()):
-            sys.exit(f"fast judge passed a known-bad output {bad!r}: {probabilities}. Rephrase the questions.")
-    note("both known negatives fail every assertion")
+            sys.exit(f"The marker passed an answer we know is bad, {bad!r}, scoring {probabilities}. Reword the "
+                     "questions before going any further.")
+    note("The marker failed both bad answers on every question, so we can trust it.")
 
 
 def main() -> None:
     configure_logging("07b_fast_judge")
     show_skill()
-    load_dotenv()      # picks up TYPESAFE_API_KEY from .env if it is not already set
-    # This file grades the outputs 06 saved. If they are not there yet, 06
-    # runs first; after that its rows are reused.
+    load_dotenv()      # picks up TYPESAFE_API_KEY from .env if it is not set already
+    # This script marks answers that 06 already produced. If they are not there
+    # yet, 06 runs first and then its results get reused from here on.
     runs_path = results_from("06_ab_comparison.py", "06_ab_runs.jsonl")
     runs = [r for r in load_jsonl(runs_path) if not r["error"]]
-    log.info("loaded %d saved outputs from %s", len(runs), runs_path.name)
+    log.info("read %d saved answers from %s", len(runs), runs_path.name)
 
-    # The LLM judge's verdicts, if 07 has run, keyed the same way as ours.
+    # What the big model said, if 07 has been run. Keyed the same way as ours
+    # so the two can be lined up answer by answer.
     llm_verdicts = {}
     llm_path = RESULTS_DIR / "07_judge.jsonl"
     if llm_path.exists():
         for row in load_jsonl(llm_path):
             if row["kind"] == "rubric":
                 llm_verdicts[(row["case"], row["rep"], row["arm"])] = {int(k): v for k, v in row["verdicts"].items()}
-        log.info("loaded %d LLM-judge verdicts from %s for comparison", len(llm_verdicts), llm_path.name)
+        log.info("read %d verdicts from the big model in %s, to compare against", len(llm_verdicts), llm_path.name)
 
-    explain("07 asked a large language model to read each output and write a verdict. This file asks the same "
-            "three questions to Jev, a model that does not generate text at all: it returns the probability "
-            "that the answer is yes, in about a tenth of a second. Same rubric, different instrument. We will "
-            "compare the two judges at the end.")
+    explain("07 asked a large model to read each answer and write out a verdict. This script asks the same "
+            "three questions of Jev, a model that writes nothing at all: it hands back the chance that the "
+            "answer is yes, in about a tenth of a second. Same questions, completely different instrument. The "
+            "two get compared at the end.")
     client = TypeSafeClient()
     sanity_check(client)
 
-    # --- rubric: probabilities per assertion, blind to arm ---------------------
+    # --- the checklist, as numbers, without saying which side is which -------
     rows = []
     passes = defaultdict(lambda: defaultdict(int))
     count = defaultdict(int)
-    agreements = defaultdict(list)       # agreements[assertion] -> [True/False per output]
-    section("rubric grading with probabilities, blind to arm")
-    explain(f"Now every one of the {len(runs)} saved outputs gets the three questions. The judge is not told "
-            f"which arm produced the text. A probability at or above {PASS_THRESHOLD} counts as PASS; the "
-            "number itself is kept, because 0.95 and 0.55 are not the same answer even if both round to yes.")
+    agreements = defaultdict(list)       # agreements[question] -> did the two markers match, per answer
+    section("marking each answer against the checklist, as numbers")
+    explain(f"Every one of the {len(runs)} saved answers now gets the three questions. The marker is never told "
+            f"which side wrote the text. Anything at or above {PASS_THRESHOLD} counts as a pass, but the number "
+            "itself gets kept, because 0.95 and 0.55 are not the same answer even though both round to yes.")
     for run in runs:
-        log.info("fast judge on %s rep %d (%s)", run["case"], run["rep"], run["arm"])
+        log.info("fast judge on %s attempt %d (this one is the %s side)", run["case"], run["rep"], run["arm"])
         probabilities = judge_rubric(client, run["final_text"])
         verdicts = {name: p >= PASS_THRESHOLD for name, p in probabilities.items()}
         rows.append({"kind": "rubric", "case": run["case"], "rep": run["rep"], "arm": run["arm"],
@@ -180,37 +224,39 @@ def main() -> None:
             for name, number in LLM_JUDGE_NUMBER.items():
                 agreements[name].append(llm[number] == verdicts[name])
 
-    section("rubric results")
-    explain("The last column is the calibration: on what share of outputs did this judge and the LLM judge in "
-            "07 give the same verdict? Two judges from different model families agreeing is much stronger "
-            "evidence than either alone. Where they disagree, one of them is wrong, and a human should read "
-            "those outputs before trusting either number.", kind="reading")
-    table("pass rate per assertion", ["assertion", "with skill", "without skill", "agrees with LLM judge"],
+    section("checklist results")
+    explain("The last column is the part that matters. On what share of answers did this marker and the big "
+            "model from 07 reach the same verdict? Two markers built on different technology agreeing is much "
+            "stronger evidence than either one on its own. Where they disagree, one of them is wrong, and "
+            "somebody should read those answers before believing either number.", kind="reading")
+    table("how often each question passed",
+          ["question", "with skill", "without skill", "agrees with the big model"],
           [[text,
             passes["with_skill"][name] / count["with_skill"],
             passes["without_skill"][name] / count["without_skill"],
             sum(agreements[name]) / len(agreements[name]) if agreements[name] else None]
            for name, text in ASSERTIONS.items()])
-    note("agreement below about 0.9 means the two judges read an assertion differently; look at those outputs")
+    note("Agreement below about 0.9 means the two markers are reading a question differently. Go and look at "
+         "those answers.")
 
-    # --- pairwise, both orders, with confidence -------------------------------
+    # --- comparing the two answers, in both orders ---------------------------
     house_style = load_skill().body
     pairs = defaultdict(dict)
     for run in runs:
         pairs[(run["case"], run["rep"])][run["arm"]] = run["final_text"]
 
-    section("pairwise comparison, both orders")
-    explain("Pairwise: show the judge both messages for the same diff and ask which follows the house style "
-            "better. Judges favour whichever response comes first, so every pair is judged twice with the order "
-            "swapped. A verdict only counts when both orders name the same arm; naming the same letter twice "
-            "is position bias and lands in its own column. Jev also reports how confident each pick was.",
-            kind="reading")
+    section("comparing the two answers head to head, in both orders")
+    explain("Show the marker both messages written for the same changes and ask which one follows the house "
+            "rules better. Markers tend to favour whichever message they read first, so every pair gets judged "
+            "twice with the order swapped. A verdict only counts when both rounds name the same side. Naming "
+            "the same letter twice means it was going by position, and that lands in its own column. Jev also "
+            "says how sure it was each time.", kind="reading")
     wins = {"with_skill": 0, "without_skill": 0, "tie": 0, "disagree": 0}
     pair_rows = []
     for (case, rep), texts in sorted(pairs.items()):
         if len(texts) < 2:
             continue
-        log.info("pairwise %s rep %d, both orders", case, rep)
+        log.info("pairwise %s attempt %d, judged both ways round", case, rep)
         first, conf_1 = judge_pair(client, texts["with_skill"], texts["without_skill"], house_style)
         second, conf_2 = judge_pair(client, texts["without_skill"], texts["with_skill"], house_style)
         verdict_1 = {"A": "with_skill", "B": "without_skill", "tie": "tie"}[first]
@@ -221,12 +267,14 @@ def main() -> None:
                      "confidence": [conf_1, conf_2], "verdict": agreed})
         pair_rows.append([case, rep, verdict_1, verdict_2, f"{conf_1:.2f} / {conf_2:.2f}", agreed])
 
-    section("pairwise results")
-    table("winner per pair", ["case", "rep", "with-skill as A", "with-skill as B", "confidence", "agreed verdict"],
+    section("head-to-head results")
+    table("who won each comparison",
+          ["case", "attempt", "with-skill shown first", "with-skill shown second", "how sure", "verdict"],
           pair_rows)
     total = sum(wins.values())
-    headline(f"with-skill wins {wins['with_skill']}/{total}   baseline wins {wins['without_skill']}   "
-             f"ties {wins['tie']}   position-dependent {wins['disagree']}", good=wins["disagree"] == 0)
+    headline(f"the skill won {wins['with_skill']} of {total} comparisons, the plain agent won "
+             f"{wins['without_skill']}, {wins['tie']} were ties, and in {wins['disagree']} the marker "
+             f"contradicted itself", good=wins["disagree"] == 0)
     save_jsonl(RESULTS_DIR / "07b_fast_judge.jsonl", rows)
 
 

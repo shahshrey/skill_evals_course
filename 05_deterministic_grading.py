@@ -1,24 +1,32 @@
 """
-Eval type 5: deterministic grading.
+Eval type 5: marking the answer with code instead of with another AI.
 
-Once the skill loads, does the agent's output follow the skill's rules? For
-rules you can express as code (a regex for the header, a length limit, a
-required trailer) you should grade with code. Try code first; fall back to
-a model judge only for what code cannot see.
+The skill has loaded. Now, does the agent's answer actually follow the rules
+the skill laid down? For any rule you can write as code, write it as code. A
+pattern for the header, a length limit, a line that has to be at the bottom:
+all of those are ordinary programming. Save the AI marker for the things code
+genuinely cannot see, like whether the explanation makes sense.
 
-Code graders are cheap, reproducible, and they tell you exactly which rule
-broke. The checks themselves live in commit_message_checks.py; read that
-file first. This file is about the process around them:
+Code marking is cheap, gives the same answer every time, and tells you exactly
+which rule broke rather than handing you a vague score.
 
-  1. Prove the grader works before trusting it. A hand-written perfect
-     message must pass, and a wrong one must fail. If either sanity check
-     fails, the numbers below would be measuring the grader, not the skill.
-  2. Run the agent with the skill on each case.
-  3. Report pass rate per rule, not one blended score, so you can see
-     whether the skill is losing on "subject_max_50" or on "refs_trailer".
+The checks themselves live in commit_message_checks.py, and that is the file
+to read first. This one is about the routine around them:
+
+  Prove the marker works before you trust a word it says. Feed it a message
+  written by hand to be perfect, and it must pass. Feed it one written to be
+  wrong, and it must fail. Skip this and the numbers further down might be
+  measuring the marker rather than the skill, and you would have no way of
+  telling which.
+
+  Run the agent on each case with the skill installed.
+
+  Report how each rule did separately, not one blended number. There is a
+  world of difference between losing on "the subject line is too long" and
+  losing on "the Refs line is missing", and a single score hides both.
 
 Run:  python 05_deterministic_grading.py
-Writes results/05_deterministic_runs.jsonl.
+Saves results/05_deterministic_runs.jsonl.
 """
 
 from __future__ import annotations
@@ -45,11 +53,13 @@ from skill_eval_common import (
     table,
 )
 
-# One rep per case here on purpose: this file is about proving the grader,
-# and 06 and 09 are where repetition (and its cost) belongs.
+# One attempt per case, on purpose. This script is about proving the marker
+# works. Repetition, and the cost that comes with it, belongs in 06 and 09.
 REPS = 1
 
-# Oracle: an answer written by hand that every rule must accept.
+# A message written by hand to be perfect. Every rule must accept it. If the
+# marker rejects this, the marker is broken and nothing else here means
+# anything.
 ORACLE_REPLY = """```text
 docs(cli): document supported environment variables
 
@@ -60,37 +70,55 @@ without reading the source.
 Refs: ACME-0000
 ```"""
 
-# Null: a plausible answer that breaks several rules (no fence, capitalised
-# subject with a period, unknown scope, no body, no trailer). It must fail.
+# A message that looks plausible at a glance and breaks several rules at once.
+# No code block, a capital letter and a full stop in the subject, a scope
+# nobody allows, no body, no Refs line. The marker must reject it. A marker
+# that waves this through is too soft to catch anything.
 NULL_REPLY = "Docs(readme): Documented the environment variables."
 
 
 class GradedRun(BaseModel):
-    """One row of results/05_deterministic_runs.jsonl."""
+    """One line in results/05_deterministic_runs.jsonl."""
 
-    case: str = Field(description="Id of the case, e.g. cli-readme.")
-    rep: int = Field(description="Which repetition of the case.")
-    model: str = Field(description="The model that served the run.")
-    skill_invoked: bool = Field(description="Whether the agent loaded the skill.")
+    case: str = Field(description="Name of the test case, such as cli-readme.")
+    rep: int = Field(description="Which attempt at this case.")
+    model: str = Field(description="Which model served this run.")
+    skill_invoked: bool = Field(description="Did the agent open the skill?")
     passed: bool = Field(description="True only when every rule passed.")
-    failed_checks: list[str] = Field(description="Names of the rules that failed; empty when passed.")
-    checks: dict[str, bool] = Field(description="Every rule that was checked and whether it passed.")
-    final_text: str = Field(description="The agent's reply, kept so the row can be re-graded later.")
-    error: str | None = Field(description="Infrastructure failure, if any; such rows are not graded.")
-    cost_usd: float = Field(description="What the run cost.")
+    failed_checks: list[str] = Field(description="Names of the rules that failed. Empty when everything passed.")
+    checks: dict[str, bool] = Field(description="Every rule that ran and whether it passed.")
+    final_text: str = Field(description="What the agent wrote, kept so you can mark it again later against "
+                                        "different rules without paying for another run.")
+    error: str | None = Field(description="Set when the run broke for reasons unrelated to the skill. Those "
+                                          "runs are not marked.")
+    cost_usd: float = Field(description="What this run cost, in US dollars.")
 
 
 def sanity_check_grader() -> None:
-    section("grader sanity check")
-    log.info("sanity-checking the grader on a known-good and a known-bad reply")
+    """Prove the marker works before trusting anything it says.
+
+    Two messages go in: one written by hand to be perfect, one written to be
+    wrong. The first must pass and the second must fail. Anything else and the
+    marker itself is the problem.
+
+    Raises:
+        SystemExit: The marker rejected the good message or accepted the bad
+            one. Either way there is no point running the agent yet.
+    """
+    section("checking the marker itself")
+    log.info("before marking anything real, feeding the marker one message known to be right and one known "
+             "to be wrong")
     oracle = check_commit_message(ORACLE_REPLY, expected_type="docs", expected_scope="cli")
     null = check_commit_message(NULL_REPLY)
-    log.info("  oracle: %s | null: %s", {r.name: r.passed for r in oracle}, {r.name: r.passed for r in null})
+    log.info("  the good message scored: %s. The bad message scored: %s",
+             {r.name: r.passed for r in oracle}, {r.name: r.passed for r in null})
     if not all_passed(oracle):
-        sys.exit(f"grader rejects the oracle answer: {failed_names(oracle)}. Fix the grader first.")
+        sys.exit(f"The marker rejected a message we know is correct, failing on {failed_names(oracle)}. "
+                 "The marker is wrong, not the skill. Fix it before going any further.")
     if all_passed(null):
-        sys.exit("grader accepts the null answer. It is too lenient; fix it first.")
-    note(f"oracle passes every rule; null fails on {failed_names(null)}")
+        sys.exit("The marker accepted a message we know is wrong. It is too soft to catch anything. Fix it "
+                 "before going any further.")
+    note(f"The marker passed the good message and caught the bad one on {failed_names(null)}. We can trust it.")
 
 
 def main() -> None:
@@ -99,16 +127,18 @@ def main() -> None:
     sanity_check_grader()
 
     rows = []
-    log.info("%d cases x %d reps, all with the skill installed", len(COMMIT_CASES), REPS)
+    log.info("%d cases, %d attempt each, all with the skill installed", len(COMMIT_CASES), REPS)
     for case in COMMIT_CASES:
         for rep in range(REPS):
-            section(f"case {case['id']} rep {rep}  (expect {case['type']}({case['scope']}))")
-            # >>> LIVE CALL: the real Claude Code CLI runs the case with the
-            #     skill installed. Grading happens after, on run.final_text.
+            section(f"case {case['id']} attempt {rep}  "
+                    f"(the right answer is {case['type']}({case['scope']}))")
+            # >>> THIS SPENDS MONEY. The real Claude Code program runs the case
+            #     with the skill installed. Marking happens afterwards, on
+            #     whatever it wrote.
             run = run_agent(commit_prompt(read_fixture(case["diff"])), skill_dir=SKILL_DIR)
             results = check_commit_message(run.final_text, case["type"], case["scope"])
             show_text("the agent's reply", run.final_text)
-            log.info("  graded: %s", {r.name: r.passed for r in results})
+            log.info("  marked: %s", {r.name: r.passed for r in results})
             rows.append(GradedRun(case=case["id"], rep=rep, model=run.model, skill_invoked=run.skill_invoked,
                                   passed=all_passed(results), failed_checks=failed_names(results),
                                   checks={r.name: r.passed for r in results}, final_text=run.final_text,
@@ -116,17 +146,18 @@ def main() -> None:
 
     section("results")
     graded = [r for r in rows if not r.error]
-    table("per run", ["case", "rep", "skill invoked", "failed checks", "verdict"],
+    table("how each run did", ["case", "attempt", "skill loaded", "what it got wrong", "verdict"],
           [[r.case, r.rep, "yes" if r.skill_invoked else "no", ", ".join(r.failed_checks) or "-", r.passed]
            for r in graded])
     per_check = Counter()
     for row in graded:
         for name, passed in row.checks.items():
             per_check[name] += passed
-    table("per rule", ["rule", "passed", "of"],
+    table("how each rule did", ["rule", "passed", "out of"],
           [[name, passes, len(graded)] for name, passes in sorted(per_check.items())])
     all_passed_runs = sum(r.passed for r in graded)
-    headline(f"all rules passed in {all_passed_runs}/{len(graded)} runs", good=all_passed_runs == len(graded))
+    headline(f"{all_passed_runs} of {len(graded)} runs got every single rule right",
+             good=all_passed_runs == len(graded))
 
     save_jsonl(RESULTS_DIR / "05_deterministic_runs.jsonl", rows)
 

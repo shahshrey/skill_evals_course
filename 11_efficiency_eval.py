@@ -1,27 +1,34 @@
 """
-Eval type 11: efficiency (cost, tokens, time).
+Eval type 11: what the improvement costs.
 
-A skill is not free. Loading it adds its whole body to the context on every
-run, and a skill that makes the agent read three reference files before
-answering can double the cost of a task it did not improve. So the last
-question after "does it help" is "what does the help cost".
+A skill is not free. Every time it loads, its whole text gets added to what
+the model has to read. A skill that sends the agent off to read three
+reference files before it answers can double the bill for a job it did not
+make any better. So after "does it help" comes the question people forget to
+ask: what is the help costing?
 
-The two deltas combine into a verdict:
+Two numbers decide it. How much better the answers got, and how much more the
+runs cost. Together they give a verdict.
 
-  quality up,   cost down  -> PARETO_BETTER   (ship it)
-  quality up,   cost up    -> TRADEOFF        (decide)
-  quality flat, cost down  -> CHEAPER          (ship it)
-  quality flat, cost up    -> PARETO_WORSE    (why is this skill here?)
-  quality down             -> REJECT
+  better and cheaper       -> PARETO_BETTER   use it
+  better but dearer        -> TRADEOFF        your call
+  no better, but cheaper   -> CHEAPER         use it
+  no better and dearer     -> PARETO_WORSE    why is this skill here?
+  worse                    -> REJECT
 
-The method is plain: average each column per arm, compare. Two accounting
-rules keep the averages honest. Token counts come from the API's usage
-block, never from len(text)/4, and they include what the prompt cache
-served, since the model read it either way. And every number is recorded
-per run from the call that produced it, so a run's cost and duration always
-describe that run and not some estimate made later.
+The method is nothing clever: average each column for each side and compare.
+Two rules keep those averages honest.
 
-Reads the rows from 06_ab_comparison.py. No model calls.
+The token counts come from what the API reports, never from guessing at the
+length of the text. And they include everything the model was handed from its
+cache, because it read that either way. A count that leaves the cache out will
+tell you a skill is free when it is not.
+
+Every number is recorded on the run that produced it, at the moment it
+happened. So a run's cost and its time always describe that run, rather than
+being worked out afterwards from an average.
+
+Reads what 06_ab_comparison.py saved. Nothing runs, so this costs nothing.
 
 Run:  python 11_efficiency_eval.py
 """
@@ -41,11 +48,28 @@ from skill_eval_common import (
     table,
 )
 
-QUALITY_NOISE = 0.05     # a quality delta smaller than this counts as flat
-COST_NOISE = 0.05        # same for cost, as a fraction of the baseline
+QUALITY_NOISE = 0.05     # a change smaller than this is not a change, it is wobble
+COST_NOISE = 0.05        # the same again for money, measured against what it used to cost
 
 
 def classify(quality_delta: float, cost_delta_fraction: float) -> str:
+    """Turn the two changes into a verdict.
+
+    Args:
+        quality_delta: How much the pass rate moved, from -1 to 1. Positive
+            means the skill made things better.
+        cost_delta_fraction: How much the bill moved, as a share of what it was
+            before. 0.2 means a fifth dearer.
+
+    Returns:
+        One of REJECT, TRADEOFF, PARETO_BETTER, CHEAPER, PARETO_WORSE or
+        NEUTRAL. Anything smaller than the wobble thresholds counts as no
+        change at all, so a rounding error never gets read as a result.
+
+    Example:
+        classify(0.20, -0.10)   # "PARETO_BETTER"
+        classify(0.20, 0.30)    # "TRADEOFF"
+    """
     if quality_delta < -QUALITY_NOISE:
         return "REJECT"
     quality_up = quality_delta > QUALITY_NOISE
@@ -61,19 +85,21 @@ def classify(quality_delta: float, cost_delta_fraction: float) -> str:
 def main() -> None:
     configure_logging("11_efficiency_eval")
     show_skill()
-    # >>> NO LIVE CALL: this file never runs the CLI or a model itself. It
-    #     averages the token, cost and timing columns 06 saved; if those rows
-    #     are missing, results_from() runs 06 once to make them.
+    # >>> THIS COSTS NOTHING. Nothing runs and nothing goes over the network.
+    #     All this does is average the counts, costs and timings that 06 saved.
+    #     If those are missing, 06 gets run once to produce them, and that does
+    #     cost money.
     path = results_from("06_ab_comparison.py", "06_ab_runs.jsonl")
     rows = [r for r in load_jsonl(path) if not r["error"]]
-    log.info("loaded %d graded rows from %s", len(rows), path.name)
+    log.info("read %d marked runs from %s", len(rows), path.name)
     for r in rows:
-        # What the model actually read: fresh tokens plus everything served
-        # from or written to the prompt cache.
+        # Everything the model actually had to read: the new text, plus
+        # everything handed to it from the cache, plus everything put into the
+        # cache for next time.
         r["context_tokens"] = r["input_tokens"] + r["cache_read_tokens"] + r["cache_write_tokens"]
     arms = {arm: [r for r in rows if r["arm"] == arm] for arm in ("with_skill", "without_skill")}
 
-    section("per-arm averages")
+    section("averages for each side")
     summary = {}
     rows_out = []
     for name in ("passed", "context_tokens", "output_tokens", "cost_usd", "duration_ms", "num_turns"):
@@ -81,25 +107,26 @@ def main() -> None:
         without_mean = mean(float(r[name]) for r in arms["without_skill"])
         summary[name] = (with_mean, without_mean)
         rows_out.append([name, f"{with_mean:.3f}", f"{without_mean:.3f}", f"{with_mean - without_mean:+.3f}"])
-    table("mean per run", ["metric", "with skill", "without skill", "delta"], rows_out)
+    table("average per run", ["what was measured", "with skill", "without skill", "difference"], rows_out)
 
     quality_delta = summary["passed"][0] - summary["passed"][1]
     cost_delta = (summary["cost_usd"][0] - summary["cost_usd"][1]) / summary["cost_usd"][1]
-    log.info("quality delta %+.3f, cost delta %+.1f%% -> %s", quality_delta, cost_delta * 100,
-             classify(quality_delta, cost_delta))
+    log.info("the skill changed the pass rate by %+.3f and the bill by %+.1f%%, which comes out as %s",
+             quality_delta, cost_delta * 100, classify(quality_delta, cost_delta))
     section("verdict")
     label = classify(quality_delta, cost_delta)
-    headline(f"{label}: quality delta {quality_delta:+.2f}, cost delta {cost_delta:+.0%}",
+    headline(f"{label}. The skill changed the pass rate by {quality_delta:+.2f} and the bill by {cost_delta:+.0%}",
              good={"PARETO_BETTER": True, "CHEAPER": True, "REJECT": False, "PARETO_WORSE": False}.get(label))
 
-    # Cost per passing run is the fair way to compare two skills on the same
-    # cases: cheaper successes win.
+    # What one good answer costs is the fairest way to compare two skills on
+    # the same work. Cheap successes beat expensive ones.
     rows_out = []
     for arm, runs in arms.items():
         passes = sum(r["passed"] for r in runs)
         spent = sum(r["cost_usd"] for r in runs)
-        rows_out.append([arm, f"${spent:.2f}", passes, f"${spent / passes:.2f}" if passes else "no passes"])
-    table("cost per passing run", ["arm", "spent", "passes", "per pass"], rows_out)
+        rows_out.append([arm, f"${spent:.2f}", passes, f"${spent / passes:.2f}" if passes else "nothing passed"])
+    table("what one passing answer costs", ["side", "spent in total", "answers that passed", "cost per pass"],
+          rows_out)
 
 
 if __name__ == "__main__":

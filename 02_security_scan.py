@@ -1,23 +1,29 @@
 """
-Eval type 2: security scan.
+Eval type 2: is this skill trying to do something nasty?
 
-A skill is text that an agent will obey, so a malicious skill is a prompt
-injection with a nice README. It can tell the agent to read your SSH keys,
-pipe a remote script into bash, or post your working directory to a server,
-and the agent will do it because the skill said so.
+Here is the thing about skills. A skill is just text, and the agent obeys it.
+So a malicious skill is an attack wearing a friendly README. It can tell the
+agent to go and read your SSH keys, to download a script off the internet and
+run it, or to quietly send your files to someone else's server. The agent will
+do all of that, because the instructions told it to and it has no way of
+knowing the instructions are hostile.
 
-This eval never runs the skill. It reads every file in the skill folder and
-matches known-bad patterns. Static scanning has false positives (a skill
-about SSH will mention ~/.ssh) so findings carry a severity and the final
-verdict is a score, not a single boolean.
+This test never runs the skill. It reads every file in the folder and looks
+for patterns known to be trouble.
 
-Scoring: each severity has a point value, and repeat hits on the same rule
-count less each time (full, half, quarter, then nothing). Ten "curl" mentions should not outrank one "ignore previous
-instructions".
+Looking for patterns means false alarms. A skill genuinely about SSH is going
+to mention ~/.ssh, and there is nothing wrong with that. So each finding
+carries a severity, and the verdict at the end is a score rather than a
+yes-or-no. A human still has to look.
+
+How the score works. Each severity is worth points. The same pattern firing
+over and over counts for less each time: full points for the first hit, half
+for the second, a quarter for the third, nothing after that. Ten mentions of
+curl should not outweigh one "ignore all previous instructions".
 
 Run:  python 02_security_scan.py                     # scans skills/commit-message
       python 02_security_scan.py <dir>               # scans any skill folder
-Exit code 1 when the verdict is "do not install".
+Exits with code 1 when the verdict is "do not install".
 """
 
 from __future__ import annotations
@@ -30,74 +36,111 @@ from pydantic import BaseModel, Field
 
 from skill_eval_common import HERE, SKILL_DIR, configure_logging, headline, log, section, show_skill, table
 
-# (rule id, severity, regex, what it means). Order does not matter.
-# Severity: CRITICAL = the skill is hostile; HIGH = dangerous unless justified;
-# MEDIUM = needs a human look; LOW = worth knowing.
+# What to look for. Each entry is a name, how bad it is, the pattern, and what
+# it means in plain terms. The order makes no difference.
+#
+# CRITICAL means the skill is hostile and there is no innocent reading.
+# HIGH means dangerous unless the skill has a good reason.
+# MEDIUM means a human should take a look.
+# LOW means worth knowing about, probably fine.
 RULES = [
     ("injection.override", "CRITICAL",
      r"ignore (all |any )?(previous|prior|above|earlier) (instructions|rules)",
-     "tries to override the user's or system's instructions"),
+     "tries to talk the agent out of following your instructions"),
     ("injection.hide", "CRITICAL",
      r"do not (tell|inform|mention to|reveal to) the user|hide this from",
-     "asks the agent to hide behaviour from the user"),
+     "asks the agent to keep what it is doing from you"),
     ("exfil.post", "CRITICAL",
      r"curl [^\n]*(-X POST|--data|-d )|wget [^\n]*--post|requests\.post\(",
-     "sends data to a remote endpoint"),
+     "sends your data off to someone else's server"),
     ("install.pipe_to_shell", "HIGH",
      r"(curl|wget)[^\n|]*\|\s*(ba|z)?sh\b",
-     "pipes a downloaded script straight into a shell"),
-    ("secrets.aws_key", "HIGH", r"\bAKIA[0-9A-Z]{16}\b", "looks like an AWS access key"),
-    ("secrets.anthropic_key", "HIGH", r"\bsk-ant-[A-Za-z0-9_-]{20,}", "looks like an Anthropic API key"),
-    ("secrets.private_key", "HIGH", r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "embeds a private key"),
+     "downloads a script and runs it straight away, sight unseen"),
+    ("secrets.aws_key", "HIGH", r"\bAKIA[0-9A-Z]{16}\b", "contains what looks like an AWS access key"),
+    ("secrets.anthropic_key", "HIGH", r"\bsk-ant-[A-Za-z0-9_-]{20,}", "contains what looks like an Anthropic API key"),
+    ("secrets.private_key", "HIGH", r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "has a private key written into it"),
     ("paths.credentials", "HIGH",
      r"~/\.(ssh|aws|gnupg|claude|config/gh)\b|/etc/(passwd|shadow)|\.env\b",
-     "reads credential or secret files"),
+     "goes looking in the places passwords and keys are kept"),
     ("exec.dynamic", "HIGH", r"\beval\(|\bexec\(|pickle\.loads\(|shell=True",
-     "executes dynamic code or shell strings"),
-    ("exec.destructive", "MEDIUM", r"\brm -rf\b|\bsudo\b|chmod \+x", "destructive or privileged commands"),
-    ("obfuscation.base64", "MEDIUM", r"[A-Za-z0-9+/]{80,}={0,2}", "long base64 blob a human cannot review"),
+     "builds code or shell commands on the fly and runs them"),
+    ("exec.destructive", "MEDIUM", r"\brm -rf\b|\bsudo\b|chmod \+x",
+     "deletes things or asks for administrator powers"),
+    ("obfuscation.base64", "MEDIUM", r"[A-Za-z0-9+/]{80,}={0,2}",
+     "a long scrambled blob that no human reviewer can read"),
     ("obfuscation.hidden_unicode", "HIGH",
-     # Written as escapes on purpose: these characters are invisible in an
-     # editor, which is the whole problem with them. Zero-width spaces and
-     # joiners, the byte-order mark, bidirectional overrides, and the "tag"
-     # block some injection attacks use to smuggle hidden ASCII.
-     r"[\u200b-\u200f\u2060\ufeff\u202a-\u202e\u2066-\u2069\U000e0000-\U000e007f]",
-     "zero-width or bidirectional characters that hide text from readers"),
-    ("network.url", "LOW", r"https?://(?!github\.com|docs\.|www\.)[\w.-]+", "contacts an external host"),
+     # Written out as escape codes deliberately. These characters are invisible
+     # in an editor, which is exactly what makes them dangerous: someone can
+     # hide a whole extra instruction in what looks like blank space. Covered
+     # here are zero-width spaces and joiners, the byte-order mark, the
+     # characters that flip text direction, and the "tag" block that some
+     # attacks use to smuggle hidden letters.
+     r"[​-‏⁠﻿‪-‮⁦-⁩\U000e0000-\U000e007f]",
+     "invisible characters that hide text from anyone reading the file"),
+    ("network.url", "LOW", r"https?://(?!github\.com|docs\.|www\.)[\w.-]+", "reaches out to an outside website"),
 ]
 COMPILED = [(rule_id, sev, re.compile(pattern, re.IGNORECASE), why) for rule_id, sev, pattern, why in RULES]
 
 SEVERITY_POINTS = {"CRITICAL": 50, "HIGH": 25, "MEDIUM": 10, "LOW": 5}
-REPEAT_WEIGHTS = [1.0, 0.5, 0.25]     # 1st, 2nd, 3rd hit of the same rule; later hits are free
+# Points for the first, second and third time the same pattern fires. After
+# that it is free, because repetition is not extra evidence.
+REPEAT_WEIGHTS = [1.0, 0.5, 0.25]
 SCANNED_SUFFIXES = {".md", ".py", ".sh", ".txt", ".json", ".yaml", ".yml", ".toml"}
 
 
 class Finding(BaseModel):
-    rule: str = Field(description="Id of the pattern that matched, e.g. injection.override.")
-    severity: str = Field(description="CRITICAL, HIGH, MEDIUM or LOW; sets the points in the risk score.")
-    file: str = Field(description="Path inside the skill folder.")
-    line: int = Field(description="1-based line number of the match.")
-    snippet: str = Field(description="The matching line, trimmed, so a reader can judge it without opening the file.")
-    why: str = Field(description="What this pattern means in a skill.")
+    """One suspicious line found in the skill's files."""
+
+    rule: str = Field(description="Name of the pattern that matched, such as injection.override.")
+    severity: str = Field(description="CRITICAL, HIGH, MEDIUM or LOW. Decides how many points it adds to the score.")
+    file: str = Field(description="Which file inside the skill folder.")
+    line: int = Field(description="Which line of it, counting from 1.")
+    snippet: str = Field(description="The line itself, trimmed, so you can judge it without opening the file.")
+    why: str = Field(description="What this pattern means when it shows up in a skill.")
 
 
 def scan_skill(skill_dir: Path) -> list[Finding]:
+    """Read every file in the skill folder and look for trouble.
+
+    Args:
+        skill_dir: The folder to scan. Subfolders are included.
+
+    Returns:
+        Every suspicious line found, in file order. An empty list means nothing
+        matched, which is not the same as proof the skill is safe.
+
+    Example:
+        findings = scan_skill(Path("skills/commit-message"))
+    """
     findings = []
     for path in sorted(skill_dir.rglob("*")):
         if path.suffix not in SCANNED_SUFFIXES or not path.is_file():
             continue
-        log.info("scanning %s against %d rules", path.relative_to(skill_dir), len(COMPILED))
+        log.info("reading %s, checking it against %d patterns", path.relative_to(skill_dir), len(COMPILED))
         for line_no, line in enumerate(path.read_text(errors="replace").splitlines(), start=1):
             for rule_id, severity, pattern, why in COMPILED:
                 if pattern.search(line):
-                    log.info("  %s hit %s at line %d", severity, rule_id, line_no)
+                    log.info("  %s match on %s at line %d", severity, rule_id, line_no)
                     findings.append(Finding(rule=rule_id, severity=severity, file=str(path.relative_to(skill_dir)),
                                             line=line_no, snippet=line.strip()[:70], why=why))
     return findings
 
 
 def risk_score(findings: list[Finding]) -> int:
-    """0 (clean) to 100 (hostile). Same rule firing many times adds less each time."""
+    """Turn a list of findings into a single number from 0 to 100.
+
+    The same pattern firing repeatedly adds less each time. One serious finding
+    should outrank a dozen trivial ones.
+
+    Args:
+        findings: Everything scan_skill() turned up.
+
+    Returns:
+        0 for a clean skill, 100 for an obviously hostile one.
+
+    Example:
+        risk_score(findings)  # 0
+    """
     hits_per_rule: dict[str, int] = {}
     score = 0.0
     for f in findings:
@@ -109,10 +152,18 @@ def risk_score(findings: list[Finding]) -> int:
 
 
 def verdict(score: int) -> str:
+    """Turn the score into advice.
+
+    Args:
+        score: The number risk_score() produced.
+
+    Returns:
+        What to do about it, in one phrase.
+    """
     if score <= 20:
         return "safe"
     if score <= 50:
-        return "caution: review the findings before installing"
+        return "caution: read the findings before you install this"
     return "do not install"
 
 
@@ -121,18 +172,20 @@ def main() -> int:
     skill_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else SKILL_DIR
     log.info("scanning %s", skill_dir)
     show_skill(skill_dir)
-    # >>> NO LIVE CALL: this file never runs the CLI or a model, and it never
-    #     runs the skill either. scan_skill() is regex over the files.
+    # >>> THIS COSTS NOTHING. No AI runs here, nothing goes over the network,
+    #     and the skill itself is never run. scan_skill() only reads the files
+    #     and looks for patterns.
     findings = scan_skill(skill_dir)
     score = risk_score(findings)
-    log.info("%d findings -> risk score %d/100 (%s)", len(findings), score, verdict(score))
+    log.info("found %d suspicious lines. Risk score %d out of 100, which means: %s",
+             len(findings), score, verdict(score))
 
     shown = skill_dir.relative_to(HERE) if skill_dir.is_relative_to(HERE) else skill_dir
     section(f"security scan results for {shown}")
     if findings:
-        table("findings", ["severity", "rule", "where", "snippet", "why it matters"],
+        table("what we found", ["how bad", "pattern", "where", "the line itself", "what it means"],
               [[f.severity, f.rule, f"{f.file}:{f.line}", f.snippet, f.why] for f in findings])
-    headline(f"risk score {score}/100: {verdict(score)}", good=score <= 20)
+    headline(f"risk score {score} out of 100: {verdict(score)}", good=score <= 20)
     return 1 if score > 50 else 0
 
 

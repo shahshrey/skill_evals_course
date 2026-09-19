@@ -1,31 +1,35 @@
 """
-Eval type 6: paired A/B comparison (skill lift).
+Eval type 6: the head-to-head test. Does the skill actually help?
 
-This is the eval everyone means when they say "does the skill work". Run the
-same prompt twice, once with the skill installed and once without, grade
-both the same way, and report the difference. Every serious skill benchmark
-reduces to this loop.
+This is the test people mean when they ask "does the skill work". Ask the same
+question twice, once with the skill installed and once without, mark both
+answers the same way, and look at the difference. Every serious benchmark of
+this kind boils down to this one loop.
 
-Three rules make it a fair test:
+Three rules keep it honest:
 
-  1. Hold everything else constant: same model, same prompt, same tools,
-     same fresh workspace. The only difference is whether .claude/skills/
-     contains the skill. A "--no-skills" flag is not enough; the files have
-     to be absent, or the agent can go and read them.
-  2. Pair the runs. Each (case, rep) produces one with-skill result and one
-     without-skill result. Paired differences are far less noisy than
-     comparing two independent averages, and 09_statistics.py depends on the
-     pairing.
-  3. Report the delta, not the absolute. "With skill: 100%" means nothing if
-     the baseline was already 95%. Published benchmarks put the average
-     software engineering skill at a few points of lift, and some at zero.
+  Change one thing only. Same model, same question, same tools, same empty
+  starting folder. The only difference is whether the skill's files are
+  sitting in the folder. Switching the skill off with a flag is not good
+  enough, because the files would still be there for the agent to go and read.
 
-Grading is the deterministic checker from commit_message_checks.py, so this
-file spends its budget on agent runs and nothing on judging. Read
-09_statistics.py right after this one: it turns these rows into an interval.
+  Compare like with like. Each case is run twice on each side, and the two
+  sides of one attempt are treated as a pair. Comparing paired results is much
+  less jumpy than comparing two separate averages, and 09_statistics.py relies
+  on that pairing.
+
+  Report the difference, never the headline number on its own. "The skill
+  scores 100 percent" tells you nothing if the plain agent already scored 95.
+  Published figures for the average software engineering skill sit at a few
+  percentage points, and plenty land at zero.
+
+Marking is done by the plain code checks in commit_message_checks.py, not by
+another AI, so the money here goes on the agent runs and none of it goes on
+marking. Read 09_statistics.py straight after this one. It takes these results
+and tells you whether the difference is real or luck.
 
 Run:  python 06_ab_comparison.py
-Writes results/06_ab_runs.jsonl, which 07, 09, 10 and 11 read.
+Saves results/06_ab_runs.jsonl, which scripts 07, 09, 10 and 11 all read.
 """
 
 from __future__ import annotations
@@ -54,39 +58,56 @@ from skill_eval_common import (
     table,
 )
 
-REPS = 2      # paired reps per case; 09_statistics.py explains why 1 is not enough
+REPS = 2      # attempts per case on each side. 09_statistics.py explains why one is not enough
 
 
 class ABRun(BaseModel):
-    """One row of results/06_ab_runs.jsonl. Files 07, 09, 10 and 11 read these."""
+    """One line in results/06_ab_runs.jsonl. Scripts 07, 09, 10 and 11 read these."""
 
-    case: str = Field(description="Id of the case. Together with rep it names the pair.")
-    rep: int = Field(description="Which repetition; the with and without rows of one rep are a pair.")
+    case: str = Field(description="Name of the test case. Together with the attempt number it identifies one pair.")
+    rep: int = Field(description="Which attempt this was. The with-skill and without-skill runs of the same "
+                                 "attempt form one pair.")
     arm: Literal["with_skill", "without_skill"] = Field(description="Which side of the comparison this run was.")
-    passed: bool = Field(description="True only when every deterministic rule passed.")
-    failed_checks: list[str] = Field(description="Names of the rules that failed; empty when passed.")
-    checks: dict[str, bool] = Field(description="Every rule that was checked and whether it passed.")
-    skill_invoked: bool = Field(description="Whether the agent loaded the skill; always False in the without arm.")
-    model: str = Field(description="The model that served the run, so a later reader knows what produced the row.")
-    final_text: str = Field(description="The agent's reply; the judges in 07 and 07b grade this text.")
-    input_tokens: int = Field(description="Uncached input tokens.")
-    cache_read_tokens: int = Field(description="Input tokens served from the prompt cache.")
-    cache_write_tokens: int = Field(description="Input tokens written to the cache.")
-    output_tokens: int = Field(description="Tokens the model generated.")
-    cost_usd: float = Field(description="What the run cost; 11 compares this per arm.")
-    duration_ms: int = Field(description="Wall-clock time of the run.")
+    passed: bool = Field(description="True only when every single check passed.")
+    failed_checks: list[str] = Field(description="Names of the checks that failed. Empty when everything passed.")
+    checks: dict[str, bool] = Field(description="Every check that ran and whether it passed.")
+    skill_invoked: bool = Field(description="Did the agent open the skill? Always false on the without-skill side.")
+    model: str = Field(description="Which model served this run, so whoever reads the file later knows what "
+                                   "produced it.")
+    final_text: str = Field(description="What the agent wrote. Scripts 07 and 07b mark this text.")
+    input_tokens: int = Field(description="Text the model read fresh, charged at full price.")
+    cache_read_tokens: int = Field(description="Text the model had read before and got back cheaply.")
+    cache_write_tokens: int = Field(description="Text saved for reuse on later runs.")
+    output_tokens: int = Field(description="Text the model wrote.")
+    cost_usd: float = Field(description="What this run cost. Script 11 compares the two sides on this.")
+    duration_ms: int = Field(description="How long the run took, in milliseconds.")
     num_turns: int = Field(
-        description="Assistant turns; loading a skill adds turns, which is where its cost comes from.")
-    error: str | None = Field(description="Infrastructure failure, if any; such rows are not graded.")
+        description="How many times the agent spoke. Opening a skill adds turns, and turns are where the extra "
+                    "cost of a skill comes from.")
+    error: str | None = Field(description="Set when the run broke for reasons unrelated to the skill. Those "
+                                          "runs are not marked.")
 
 
 def graded_run(prompt: str, case: dict, rep: int, with_skill: bool) -> ABRun:
-    # >>> LIVE CALL: the real Claude Code CLI runs once per arm. skill_dir=None
-    #     is the without-skill arm: same CLI, same prompt, no skill folder.
+    """Run the agent once on one side of the comparison, then mark the answer.
+
+    Args:
+        prompt: The request to send.
+        case: The test case, carrying the id and the right answer to check against.
+        rep: Which attempt this is.
+        with_skill: True to install the skill first, False for the plain agent.
+
+    Returns:
+        An ABRun holding the marks, the answer itself, and what it cost.
+    """
+    # >>> THIS SPENDS MONEY. The real Claude Code program runs once per side.
+    #     Passing no skill folder is the without-skill side: same program, same
+    #     question, no skill anywhere in the folder.
     run = run_agent(prompt, skill_dir=SKILL_DIR if with_skill else None)
     results = check_commit_message(run.final_text, case["type"], case["scope"])
-    log.info("  graded %s arm: %s -> %s", "with-skill" if with_skill else "baseline",
-             failed_names(results) or "all checks passed", "PASS" if all_passed(results) else "FAIL",
+    log.info("  marked the %s answer. Checks that failed: %s. Overall: %s",
+             "with-skill" if with_skill else "baseline",
+             failed_names(results) or "none, all checks passed", "PASS" if all_passed(results) else "FAIL",
              extra={"file_only": True})
     return ABRun(
         case=case["id"], rep=rep, arm="with_skill" if with_skill else "without_skill",
@@ -99,42 +120,56 @@ def graded_run(prompt: str, case: dict, rep: int, with_skill: bool) -> ABRun:
 
 
 def explain_pair(with_skill: ABRun, without_skill: ABRun) -> None:
-    """Interpret one pair in words, right after both arms finished."""
+    """Say in words what one head-to-head comparison showed.
+
+    Printed right after both sides have run, while the two answers are still on
+    screen, so the reader can check the verdict against the text.
+
+    Args:
+        with_skill: The run that had the skill installed.
+        without_skill: The run that did not.
+    """
     if with_skill.passed and not without_skill.passed:
-        explain(f"With the skill every rule passed. Without it the message broke {len(without_skill.failed_checks)} "
-                f"rules: {', '.join(without_skill.failed_checks)}. Those are things the model cannot know without "
-                "being told: the Refs trailer, the fixed scope list, the text fence. That gap is the skill's value.",
-                kind="meaning")
+        explain(f"With the skill, every check passed. Without it, the message broke "
+                f"{len(without_skill.failed_checks)} of them: {', '.join(without_skill.failed_checks)}. None of "
+                "those are things the model could work out on its own. The Refs line at the bottom, the fixed "
+                "list of allowed scopes, the exact way the message has to be wrapped: somebody has to say. That "
+                "gap is what the skill is buying you.", kind="meaning")
     elif with_skill.passed and without_skill.passed:
-        explain("Both arms passed. On this case the skill bought nothing; if that happens on every case, the "
-                "skill is teaching the model something it already knew.", kind="meaning")
+        explain("Both sides passed. On this case the skill bought nothing at all. If that happens on every "
+                "case, the skill is teaching the model something it already knew, and you could delete it "
+                "without anyone noticing.", kind="meaning")
     elif not with_skill.passed:
-        explain(f"The with-skill arm failed on {', '.join(with_skill.failed_checks)}. Either the skill is unclear "
-                "on that rule or the agent ignored it; the saved reply lets you check which.", kind="meaning")
+        explain(f"The run with the skill failed on: {', '.join(with_skill.failed_checks)}. Either the skill is "
+                "vague about that rule or the agent read it and ignored it. The answer is saved, so you can go "
+                "and look at which.", kind="meaning")
 
 
 def main() -> None:
     configure_logging("06_ab_comparison")
     rows = []
-    log.info("%d cases x %d reps x 2 arms -> %d agent runs", len(COMMIT_CASES), REPS, len(COMMIT_CASES) * REPS * 2)
+    log.info("%d cases, %d attempts each, run on both sides. That is %d agent runs, and they cost real money.",
+             len(COMMIT_CASES), REPS, len(COMMIT_CASES) * REPS * 2)
     show_skill()
-    explain(f"This is the eval people mean by 'does the skill work'. Each of the {len(COMMIT_CASES)} cases runs "
-            f"{REPS} times, and each run happens twice: once with the skill installed in a fresh temp folder, "
-            "once in an identical folder without it. Same prompt, same model, same tools. The only difference "
-            "between the two arms is whether .claude/skills/commit-message exists. Both are graded by the same "
-            "code checks, and the number we care about is the difference.")
+    explain(f"This is the test people mean when they ask whether a skill works. Each of the "
+            f"{len(COMMIT_CASES)} cases runs {REPS} times, and every run happens twice: once in a brand new "
+            "empty folder with the skill installed, and once in an identical empty folder without it. Same "
+            "question, same model, same tools. The only difference between the two is whether the skill's "
+            "files are there. Both answers get marked by the same plain code checks, and the number that "
+            "matters is the gap between them.")
     for case in COMMIT_CASES:
         prompt = commit_prompt(read_fixture(case["diff"]))
-        section(f"case {case['id']}: the prompt")
-        show_text(f"prompt to the agent (fixtures/{case['diff']})", prompt)
+        section(f"case {case['id']}: the request")
+        show_text(f"what we ask the agent (from fixtures/{case['diff']})", prompt)
         for rep in range(REPS):
-            section(f"pair {case['id']} rep {rep}")
-            explain(f"Arm 1 of the pair: the skill is installed. The right answer for this diff is "
+            section(f"pair {case['id']} attempt {rep}")
+            explain(f"First side: the skill is installed. For this set of changes the correct answer is "
                     f"{case['type']}({case['scope']}).")
-            # Both arms back to back, so a slow afternoon at the API hits both equally.
+            # Both sides run back to back, so if the service is having a slow
+            # afternoon, it slows both of them equally and the comparison holds.
             with_skill = graded_run(prompt, case, rep, with_skill=True)
-            explain("Arm 2 of the pair: the same prompt in a fresh folder with no skill anywhere. The agent has "
-                    "to guess the house style from general knowledge.")
+            explain("Second side: the same question, a fresh empty folder, no skill anywhere. The agent has to "
+                    "guess the house style from whatever it already knows.")
             without_skill = graded_run(prompt, case, rep, with_skill=False)
             rows += [with_skill, without_skill]
             show_pair("with the skill", with_skill.final_text, "without the skill", without_skill.final_text)
@@ -143,37 +178,42 @@ def main() -> None:
     graded = [r for r in rows if not r.error]
     by_arm = {arm: [r for r in graded if r.arm == arm] for arm in ("with_skill", "without_skill")}
     rate = {arm: sum(r.passed for r in runs) / len(runs) for arm, runs in by_arm.items()}
-    log.info("%d graded rows (%d errored); pass rates %s", len(graded), len(rows) - len(graded), rate,
-             extra={"file_only": True})
+    log.info("marked %d runs (%d broke and were skipped). Pass rates: %s", len(graded), len(rows) - len(graded),
+             rate, extra={"file_only": True})
 
     section("results")
-    explain("Lift is the with-skill pass rate minus the without-skill pass rate. Report the lift, never the "
-            "with-skill number alone: 100 percent means nothing if the baseline was already 95. The per-rule "
-            "table shows which rules the baseline gets right on its own; those are the parts of the skill you "
-            "could delete.", kind="reading")
+    explain("The number to read is the gap: the pass rate with the skill minus the pass rate without it. Never "
+            "quote the with-skill number on its own. A hundred percent means nothing if the plain agent was "
+            "already at ninety-five. The second table breaks it down by check, which tells you which rules the "
+            "plain agent already gets right. Those are the parts of the skill you could throw away.",
+            kind="reading")
     pairs = defaultdict(dict)
     for r in graded:
         pairs[(r.case, r.rep)][r.arm] = r
-    table("per pair", ["case", "rep", "with skill", "without skill", "baseline failed on"],
+    table("each head-to-head comparison",
+          ["case", "attempt", "with skill", "without skill", "what the plain agent got wrong"],
           [[case, rep, p["with_skill"].passed, p["without_skill"].passed,
             ", ".join(p["without_skill"].failed_checks) or "-"]
            for (case, rep), p in sorted(pairs.items()) if len(p) == 2])
 
-    # Per-rule view: which rules does the baseline already get right on its
-    # own? Those are the parts of the skill you could delete. The rule names
-    # come from the first row; a row missing a rule (header_format failed, so
-    # the header rules were never checked) counts that rule as failed.
+    # Break the results down check by check. The ones the plain agent already
+    # passes are the parts of the skill nobody needed.
+    #
+    # The list of check names comes from the first run. If a later run is
+    # missing a check, that is because an earlier check failed and stopped the
+    # rest from running (a message with no header cannot be checked for header
+    # format), so a missing check counts as a failure.
     rule_rows = []
     for name in graded[0].checks:
         per_arm = {arm: sum(r.checks.get(name, False) for r in runs) / len(runs)
                    for arm, runs in by_arm.items()}
         rule_rows.append([name, per_arm["with_skill"], per_arm["without_skill"]])
-    table("pass rate per rule", ["rule", "with skill", "without skill"], rule_rows)
+    table("how often each check passed", ["check", "with skill", "without skill"], rule_rows)
 
     lift = rate["with_skill"] - rate["without_skill"]
-    headline(f"pass rate with skill {rate['with_skill']:.2f}   without {rate['without_skill']:.2f}   "
-             f"lift {lift:+.2f}", good=lift > 0)
-    note("run 09_statistics.py next to see whether that lift survives an interval")
+    headline(f"with the skill {rate['with_skill']:.0%} of answers passed, without it {rate['without_skill']:.0%}. "
+             f"The skill changed the pass rate by {lift:+.0%}", good=lift > 0)
+    note("Run 09_statistics.py next. It says whether that difference is real or whether we just got lucky.")
 
     save_jsonl(RESULTS_DIR / "06_ab_runs.jsonl", rows)
 

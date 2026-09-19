@@ -1,28 +1,35 @@
 """
-Eval type 10: regression check.
+Eval type 10: catching the day the numbers quietly get worse.
 
-Skills rot. The description that triggered fine in March stops triggering
-after the harness updates its routing prompt; a rule you tightened in the
-body quietly breaks a case that used to pass. Nobody notices because nobody
-re-runs the evals. A regression check is what makes re-running them worth
-doing: it compares today's numbers with a saved baseline and fails loudly
-when they drop.
+Skills go off. A description that reliably triggered in March stops triggering
+after the software behind it changes how it picks skills. A rule you tightened
+in the body breaks a case that used to pass. Nobody spots it, because nobody
+goes back and runs the tests again.
 
-The interesting design question is telling two situations apart:
+This is what makes going back worth the trouble. It takes the numbers from the
+last run you were happy with, compares today's against them, and complains
+loudly when something has fallen.
 
-  - the skill file changed and a number dropped: that is expected churn.
-    Warn, and let the author decide whether the trade was worth it.
-  - the skill file did NOT change and a number dropped anyway: that is
-    drift in the model or harness. Error, because nothing you wrote caused
-    it and you want to know.
+The useful part is that it tells two very different situations apart.
 
-The skill's content hash is what distinguishes them. This file reads the
-summaries the earlier evals saved, so it costs nothing to run; the expensive
-part is re-running 04, 05 and 06 to refresh those summaries.
+You edited the skill and a number dropped. That is the normal cost of a
+change. It gives you a warning and leaves it to you to decide whether the
+trade was worth making.
+
+You did not touch the skill and a number dropped anyway. Something underneath
+you moved: the model, or the software running it. That is an error, because
+nothing you did caused it and you would want to know.
+
+It tells them apart by fingerprinting the skill folder. Same fingerprint means
+you changed nothing.
+
+Running this costs nothing. It only reads what 04, 05 and 06 already saved.
+Refreshing those files is the expensive part.
 
 Run:  python 10_regression_check.py --save-baseline    # after a run you trust
-      python 10_regression_check.py                    # on every later run
-Exit code 1 on an unexplained regression, so CI can block the merge.
+      python 10_regression_check.py                    # every run after that
+It exits with an error code when something dropped for no reason you caused,
+so an automated build can stop the change from going in.
 """
 
 from __future__ import annotations
@@ -47,14 +54,25 @@ from skill_eval_common import (
 )
 
 BASELINE_PATH = RESULTS_DIR / "baseline.json"
-# A drop bigger than this is a regression; smaller is noise. Size it to your
-# run counts: with 8 pairs in 06 one flaky run moves the lift by 0.125, so a
-# tolerance of 0.10 would flag pure luck. Tighten it as you add reps.
+# Anything that falls further than this counts as a real drop. Anything smaller
+# is just the normal wobble between runs. Set it against how many runs you do:
+# with 8 pairs in 06, one unlucky run moves the result by 0.125 on its own, so
+# a limit of 0.10 would fire on pure chance. Tighten it as you add more runs.
 TOLERANCE = 0.25
 
 
 def skill_hash() -> str:
-    """Fingerprint of every file in the skill folder, so any edit changes it."""
+    """Boil the whole skill folder down to a short fingerprint.
+
+    Every file in the folder, and its name, goes into the fingerprint, so
+    editing a single character anywhere changes it.
+
+    Returns:
+        Twelve characters that stand for the current contents of the skill.
+
+    Example:
+        skill_hash()  # "3f9c1a0b7e42"
+    """
     digest = hashlib.sha256()
     for path in sorted(SKILL_DIR.rglob("*")):
         if path.is_file():
@@ -64,13 +82,36 @@ def skill_hash() -> str:
 
 
 def pass_rate(path: Path, arm: str | None = None) -> float | None:
+    """Work out what share of saved runs passed.
+
+    Args:
+        path: A results file that one of the earlier scripts saved.
+        arm: Count only the runs with the skill ("with_skill") or only those
+            without it ("without_skill"). Leave it out to count everything.
+
+    Returns:
+        A number from 0 to 1, or nothing at all when the file holds no runs
+        worth counting. Runs that broke for unrelated reasons are ignored.
+    """
     rows = [r for r in load_jsonl(path) if not r["error"] and (arm is None or r["arm"] == arm)]
     return sum(r["passed"] for r in rows) / len(rows) if rows else None
 
 
 def current_metrics() -> dict[str, float | None]:
-    """The handful of numbers worth watching, pulled from saved results.
-    Any results file that is missing gets produced by its script first."""
+    """Pull today's numbers out of the files the earlier scripts saved.
+
+    Four things get watched. How often the skill loaded when it should have
+    (trigger_precision and trigger_recall), how often the answers passed every
+    rule (deterministic_pass_rate), and how much difference the skill made
+    (ab_lift).
+
+    Any results file that is missing gets produced by running its script first,
+    which does cost money.
+
+    Returns:
+        The four numbers, keyed by name. A number is missing when there was
+        nothing to work it out from.
+    """
     trigger = json.loads(results_from("04_trigger_eval.py", "04_trigger_summary.json").read_text())
     ab_path = results_from("06_ab_comparison.py", "06_ab_runs.jsonl")
     with_skill = pass_rate(ab_path, "with_skill")
@@ -87,28 +128,33 @@ def current_metrics() -> dict[str, float | None]:
 def main() -> int:
     configure_logging("10_regression_check")
     show_skill()
-    # >>> NO LIVE CALL: this file never runs the CLI or a model. It compares
-    #     the summaries 04, 05 and 06 saved against a stored baseline.
+    # >>> THIS COSTS NOTHING. Nothing runs and nothing goes over the network.
+    #     All this does is compare what 04, 05 and 06 already saved against the
+    #     numbers stored last time.
     metrics = current_metrics()
     fingerprint = skill_hash()
-    log.info("current metrics from results/: %s", metrics)
-    log.info("skill fingerprint %s", fingerprint)
+    log.info("today's numbers, read from the results folder: %s", metrics)
+    log.info("the skill folder currently fingerprints as %s", fingerprint)
 
     if "--save-baseline" in sys.argv:
         BASELINE_PATH.write_text(json.dumps({"skill_hash": fingerprint, "metrics": metrics}, indent=2))
-        section("baseline")
-        table("saved as the new baseline", ["metric", "value"], [[k, v] for k, v in metrics.items()])
-        headline(f"baseline saved for skill {fingerprint}", good=True)
+        section("saving today's numbers to compare against later")
+        table("these are the numbers to beat from now on", ["what was measured", "value"],
+              [[k, v] for k, v in metrics.items()])
+        headline(f"saved. Everything from here on gets compared against these, for skill {fingerprint}", good=True)
         return 0
 
     if not BASELINE_PATH.exists():
-        sys.exit("no baseline yet; run with --save-baseline after a run you trust")
+        sys.exit("There is nothing to compare against yet. Do a run you are happy with, then run this again "
+                 "with --save-baseline to record it.")
     baseline = json.loads(BASELINE_PATH.read_text())
     skill_changed = baseline["skill_hash"] != fingerprint
-    log.info("baseline metrics: %s (skill %s)", baseline["metrics"], baseline["skill_hash"])
-    section("comparison against the baseline")
-    note(f"skill {'CHANGED' if skill_changed else 'unchanged'} since the baseline "
-         f"({baseline['skill_hash']} -> {fingerprint})")
+    log.info("the numbers to beat: %s, taken when the skill fingerprinted as %s",
+             baseline["metrics"], baseline["skill_hash"])
+    section("today's numbers against the ones we saved")
+    note(f"The skill {'CHANGED' if skill_changed else 'has not changed'} since those numbers were saved "
+         f"({baseline['skill_hash']} -> {fingerprint}). That decides whether a drop is your doing or "
+         "something else's.")
 
     exit_code = 0
     rows = []
@@ -118,17 +164,19 @@ def main() -> int:
             rows.append([name, before, now, "no data"])
             continue
         dropped = before - now > TOLERANCE
-        log.info("%s: %.2f -> %.2f (tolerance %.2f) %s", name, before, now, TOLERANCE, "DROPPED" if dropped else "ok")
+        log.info("%s was %.2f, now %.2f. Anything worse than %.2f down counts as a real drop, so: %s",
+                 name, before, now, TOLERANCE, "DROPPED" if dropped else "ok")
         if not dropped:
             status = "ok"
         elif skill_changed:
-            status = "WARN dropped after a skill edit (expected churn?)"
+            status = "WARN it fell, but you did edit the skill"
         else:
-            status = "ERROR dropped with no skill edit (drift)"
+            status = "ERROR it fell and nobody touched the skill"
             exit_code = 1
         rows.append([name, before, now, status])
-    table("metrics", ["metric", "baseline", "now", "status"], rows)
-    headline("no unexplained regressions" if exit_code == 0 else "regression with no skill edit: something drifted",
+    table("how each number compares", ["what was measured", "was", "now", "verdict"], rows)
+    headline("nothing dropped that you did not cause yourself" if exit_code == 0 else
+             "something dropped and nobody edited the skill, so something underneath us moved",
              good=exit_code == 0)
     return exit_code
 

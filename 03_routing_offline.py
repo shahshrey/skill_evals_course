@@ -1,27 +1,35 @@
 """
-Eval type 3: offline routing test.
+Eval type 3: will the right skill get picked, judged by word overlap alone?
 
-Harnesses pick a skill by reading every installed skill's name and
-description and matching them against the user's request. So before you spend
-a single model call, you can ask a cheaper question: does this description
-contain the words a user would actually type, and does it stay clearly apart
-from neighbouring skills?
+When you ask Claude Code to do something, it decides which skill to use by
+reading every installed skill's name and description and comparing them with
+what you typed. So before spending a penny on real runs, there is a cheaper
+question worth asking: does this description contain the words a real person
+would type, and does it stay clearly out of the way of the skills sitting next
+to it?
 
-This file answers that with TF-IDF cosine similarity. In plain words: count the
-words in each description, give less weight to words every description
-shares, and score each description by how much its word-bag overlaps the
-prompt's. The "router" below is just that ranking. It is not how the real
-harness routes (that is a model reading the descriptions), so a pass here is
-not proof of triggering. But it is free and deterministic, and it catches two
-real problems early:
+This script answers that by counting words. Count the words in each
+description, care less about words that every description happens to share,
+and then score each description by how much its words overlap with the
+request. Whichever scores highest wins. That is the whole method. The
+technical name for it is TF-IDF cosine similarity, and if you already know the
+term, this is the ordinary version of it.
 
-  1. vocabulary gaps: the positive prompts do not rank the skill first, so
-     the description is missing the words users say;
-  2. collisions: two descriptions are so similar that the router will flip
-     between them.
+Be clear about what this does not prove. The real software does not count
+words, it has a model read the descriptions and decide. So passing here is not
+proof the skill will trigger. But it costs nothing, it gives the same answer
+every time, and it catches two genuine problems before you spend anything:
 
-03b_routing_semantic.py asks the same question by meaning instead of word
-overlap, and 04_trigger_eval.py is the live version against the real harness.
+  Missing vocabulary. A request that should obviously go to your skill does
+  not rank it first. That means your description is missing the words people
+  actually use.
+
+  Descriptions that clash. Two skills describe themselves so similarly that
+  whichever gets picked is close to a coin toss.
+
+03b_routing_semantic.py asks the same question by meaning rather than by
+overlapping words. 04_trigger_eval.py is the real thing, against the real
+software.
 
 Run:  python 03_routing_offline.py
 """
@@ -46,14 +54,17 @@ from skill_eval_common import (
     table,
 )
 
-# The catalog is every skill the router could choose from. The decoys in
-# fixtures/catalog overlap with ours on purpose (all four talk about git).
+# Everything the chooser gets to pick between. The extra skills in
+# fixtures/catalog are decoys, and they overlap with ours deliberately: all
+# four of them are about git. A test where the right answer is obvious is not
+# a test.
 CATALOG_DIRS = [SKILL_DIR, *sorted((FIXTURES_DIR / "catalog").iterdir())]
 OUR_SKILL = "commit-message"
 
-# Prompts that should route to our skill, and prompts that should route
-# elsewhere. A negative names the skill that ought to win instead: that turns
-# "we did not come first" into a real pairwise test rather than a free pass.
+# Requests that should land on our skill, and requests that should land
+# somewhere else. Each of the second kind names the skill that ought to win
+# instead. That turns "ours did not come first" into a real head-to-head
+# question rather than a free pass for coming second to nobody in particular.
 POSITIVE_PROMPTS = [
     "write a commit message for this diff",
     "can you draft the commit for the changes I just made",
@@ -67,13 +78,28 @@ NEGATIVE_PROMPTS = [
 ]
 COLLISION_WARN, COLLISION_ERROR = 0.50, 0.75
 
+# Words so common they tell you nothing about what a request is for.
 STOPWORDS = {"a", "an", "the", "and", "or", "for", "to", "of", "in", "on", "with", "this", "that", "is", "are",
              "be", "it", "its", "as", "at", "by", "from", "when", "use", "user", "asks"}
 
 
 def stem(word: str) -> str:
-    """Crude suffix stripping so "summarised", "summarise" and "summarising"
-    all become "summaris". Real stemmers do better; this is enough to route."""
+    """Chop common endings off a word so related forms match each other.
+
+    "summarised", "summarise" and "summarising" all become "summaris", which
+    means a request using one form still matches a description using another.
+    Proper tools do this far better. This is crude and good enough.
+
+    Args:
+        word: A single lowercase word.
+
+    Returns:
+        The word with one common ending removed, if removing it leaves at
+        least three characters behind.
+
+    Example:
+        stem("summarising")  # "summaris"
+    """
     for suffix in ("ing", "ed", "es", "s", "e"):
         if word.endswith(suffix) and len(word) - len(suffix) >= 3:
             return word[: -len(suffix)]
@@ -81,37 +107,107 @@ def stem(word: str) -> str:
 
 
 def tokens(text: str) -> list[str]:
-    """Lowercase, stemmed words with stopwords removed."""
+    """Break text into the words worth comparing.
+
+    Everything goes lowercase, endings get chopped off, and the very common
+    words are thrown away.
+
+    Args:
+        text: Any text, such as a request or a description.
+
+    Returns:
+        The words left over, in the order they appeared.
+
+    Example:
+        tokens("Write a commit message")  # ["writ", "commit", "messag"]
+    """
     return [stem(w) for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in STOPWORDS]
 
 
 def inverse_document_frequency(documents: dict[str, str]) -> dict[str, float]:
-    """Words that appear in every description carry no signal, so weight each
-    word by how rare it is across the catalog. Computed once, from the catalog
-    only; the query is scored against the catalog's idf, never its own."""
+    """Work out how much each word is worth, based on how rare it is.
+
+    A word that turns up in every description tells you nothing about which
+    skill to pick. A word that turns up in only one is a strong hint. So each
+    word gets a weight: the rarer it is across the whole set, the more it is
+    worth.
+
+    The weights are worked out once, from the descriptions only. A request is
+    always scored against those weights, never against its own, or a request
+    could invent its own importance.
+
+    Args:
+        documents: Each skill's name and description, keyed by skill name.
+
+    Returns:
+        A weight for each word, keyed by the word.
+
+    Example:
+        idf = inverse_document_frequency({"a": "commit message", "b": "changelog"})
+    """
     doc_count = len(documents)
     df = Counter(word for text in documents.values() for word in set(tokens(text)))
-    # The tiny epsilon keeps a word that appears in every description from
-    # weighing exactly zero, which would make it vanish from every vector.
+    # The tiny number on the end stops a word that appears in every single
+    # description from being worth exactly zero. Exactly zero would make it
+    # disappear entirely, and disappearing has odd knock-on effects further down.
     return {word: math.log((1 + doc_count) / (1 + count)) + 1e-9 for word, count in df.items()}
 
 
 def vectorize(text: str, idf: dict[str, float]) -> dict[str, float]:
-    """Sparse vector: term frequency times idf. A prompt word no description
-    contains gets a default weight; it cannot match anything, so it only
-    scales every score down a little and never changes the ranking."""
+    """Turn text into a bag of weighted words.
+
+    Each word's score is how many times it appears, multiplied by how rare it
+    is overall.
+
+    A word in the request that appears in no description at all gets a default
+    weight. It cannot match anything, so all it does is drag every score down
+    by the same amount, which leaves the ranking unchanged.
+
+    Args:
+        text: The text to convert.
+        idf: The word weights from inverse_document_frequency().
+
+    Returns:
+        A score per word, keyed by the word. Words not in the text are simply
+        absent rather than zero.
+    """
     tf = Counter(tokens(text))
     return {word: count * idf.get(word, 1.0) for word, count in tf.items()}
 
 
 def cosine(a: dict[str, float], b: dict[str, float]) -> float:
+    """Measure how much two bags of weighted words overlap.
+
+    Length is deliberately ignored, so a long description is not favoured over
+    a short one just for having more words in it.
+
+    Args:
+        a: The first bag of weighted words.
+        b: The second.
+
+    Returns:
+        0 for nothing in common, 1 for identical. Anything above about 0.5
+        means two descriptions are treading on each other.
+    """
     dot = sum(a[w] * b.get(w, 0.0) for w in a)
     norm = math.sqrt(sum(v * v for v in a.values())) * math.sqrt(sum(v * v for v in b.values()))
     return dot / norm if norm else 0.0
 
 
 def rank(prompt: str, vectors: dict[str, dict[str, float]], idf: dict[str, float]) -> list[tuple[str, float]]:
-    """Skills ordered by similarity to the prompt, best first."""
+    """Put the skills in order of how well they match a request.
+
+    Args:
+        prompt: What the user typed.
+        vectors: Each skill's bag of weighted words, keyed by skill name.
+        idf: The word weights from inverse_document_frequency().
+
+    Returns:
+        Skill names paired with their scores, best match first.
+
+    Example:
+        rank("write a commit message", vectors, idf)[0]
+    """
     query = vectorize(prompt, idf)
     scored = [(name, cosine(query, vec)) for name, vec in vectors.items()]
     return sorted(scored, key=lambda pair: -pair[1])
@@ -120,42 +216,45 @@ def rank(prompt: str, vectors: dict[str, dict[str, float]], idf: dict[str, float
 def main() -> int:
     configure_logging("03_routing_offline")
     show_skill()
-    # Name counts double: routers weight the name heavily, so the ranking should too.
+    # The name is counted twice on purpose. Real choosers lean heavily on the
+    # skill's name, so this ranking should lean on it too.
     catalog = {}
     for skill_dir in CATALOG_DIRS:
         skill = load_skill(skill_dir)
         catalog[skill.name] = f"{skill.name} {skill.name} {skill.description}"
-        log.info("catalog: %s -> %d tokens", skill.name, len(tokens(catalog[skill.name])))
-    # >>> NO LIVE CALL: this file never runs the CLI or a model. The "router"
-    #     is word counting in plain Python. 03b asks a model instead, and 04
-    #     runs the real CLI.
+        log.info("added %s to the list of candidates, %d useful words in its description",
+                 skill.name, len(tokens(catalog[skill.name])))
+    # >>> THIS COSTS NOTHING. No AI runs here and nothing goes over the
+    #     network. The chooser is word counting in ordinary Python. 03b asks a
+    #     model instead, and 04 runs the real thing.
     idf = inverse_document_frequency(catalog)
     vectors = {name: vectorize(text, idf) for name, text in catalog.items()}
-    log.info("built idf over %d skills, %d distinct words", len(catalog), len(idf))
+    log.info("weighed up %d candidate skills and %d different words between them", len(catalog), len(idf))
     failures = 0
 
-    section("positive prompts: our skill should rank first")
+    section("requests that should land on our skill")
     rows = []
     for prompt in POSITIVE_PROMPTS:
         ranking = rank(prompt, vectors, idf)
-        log.info("ranking for %r: %s", prompt, ", ".join(f"{n}={s:.2f}" for n, s in ranking))
+        log.info("for the request %r the order came out: %s",
+                 prompt, ", ".join(f"{n}={s:.2f}" for n, s in ranking))
         winner, score = ranking[0]
         ok = winner == OUR_SKILL
         failures += not ok
         rows.append([prompt, winner, score, ok])
-    table("positives", ["prompt", "ranked first", "score", "verdict"], rows)
+    table("should land on our skill", ["the request", "what won", "score", "verdict"], rows)
 
-    section("negative prompts: the owner should outrank our skill")
+    section("requests that belong to a different skill")
     rows = []
     for prompt, owner in NEGATIVE_PROMPTS:
         order = [name for name, _ in rank(prompt, vectors, idf)]
-        log.info("ranking for %r: %s", prompt, " > ".join(order))
+        log.info("for the request %r the order came out: %s", prompt, " > ".join(order))
         ok = order.index(owner) < order.index(OUR_SKILL)
         failures += not ok
         rows.append([prompt, order[0], owner, ok])
-    table("negatives", ["prompt", "ranked first", "owner", "verdict"], rows)
+    table("should land elsewhere", ["the request", "what won", "who it belongs to", "verdict"], rows)
 
-    section("collisions between descriptions")
+    section("descriptions that tread on each other")
     rows = []
     names = list(vectors)
     for i, a in enumerate(names):
@@ -165,10 +264,11 @@ def main() -> int:
                 failures += sim >= COLLISION_ERROR
                 rows.append([a, b, sim, "ERROR" if sim >= COLLISION_ERROR else "warn"])
     if rows:
-        table("pairs above the warning threshold", ["skill", "skill", "similarity", "level"], rows)
+        table("pairs of descriptions that overlap too much",
+              ["one skill", "the other", "how similar", "how bad"], rows)
     else:
-        note(f"no pair of descriptions above {COLLISION_WARN:.2f} similarity")
-    headline(f"{failures} failures", good=failures == 0)
+        note(f"No two descriptions overlap by more than {COLLISION_WARN:.0%}, so nothing is competing.")
+    headline(f"{failures} things went wrong", good=failures == 0)
     return 1 if failures else 0
 
 
