@@ -1,0 +1,296 @@
+{
+  "title": "Skill evals: the eleven types",
+  "slides": [
+    {
+      "kind": "cover",
+      "id": "cover",
+      "eyebrow": "A short course for beginners",
+      "title": "Evaluating agent skills",
+      "text": "Eleven ways to find out whether a SKILL.md file actually helps, and the method behind each one.",
+      "notes": "Welcome. This deck covers the ideas only. The Python files in the course show the code."
+    },
+    {
+      "kind": "cards",
+      "id": "what",
+      "eyebrow": "Starting point",
+      "title": "A skill is instructions loaded on demand",
+      "cards": [
+        {
+          "title": "What that means",
+          "lines": [
+            "A folder with a SKILL.md: a name, a description, and a procedure",
+            "The harness (Claude Code and friends) reads the description to decide when to load it",
+            "The model never sees the body until the skill is loaded"
+          ]
+        },
+        {
+          "title": "Why it needs evals",
+          "lines": [
+            "A skill that never loads fails silently: no error, no log line",
+            "A skill that loads can still be ignored, half-followed, or overridden",
+            "Most software engineering skills measured so far add little or nothing"
+          ]
+        }
+      ],
+      "notes": "Two failure modes to keep in mind for the whole deck: not loading, and loading but not helping."
+    },
+    {
+      "kind": "cards",
+      "id": "map",
+      "eyebrow": "The map",
+      "title": "Three groups, eleven eval types",
+      "cards": [
+        {
+          "title": "Static, free",
+          "lines": [
+            "1. Structural lint",
+            "2. Security scan",
+            "3. Offline routing"
+          ]
+        },
+        {
+          "title": "Live, real agent runs",
+          "lines": [
+            "4. Trigger eval",
+            "5. Deterministic grading",
+            "6. Paired A/B",
+            "7. LLM-as-judge",
+            "8. Trajectory eval"
+          ]
+        },
+        {
+          "title": "Analysis of saved runs",
+          "lines": [
+            "9. Statistics",
+            "10. Regression check",
+            "11. Efficiency"
+          ]
+        }
+      ],
+      "footer": "Run them in this order. The free ones catch the cheap mistakes before you spend a single agent run.",
+      "notes": "Cost rises left to right. The third group re-reads what the second group saved, so it costs nothing."
+    },
+    {
+      "kind": "type",
+      "id": "lint",
+      "number": 1,
+      "group": "Static · free",
+      "title": "Structural lint",
+      "question": "Is this SKILL.md well-formed enough for a harness to load it at all?",
+      "method": [
+        "Parse the frontmatter and check the spec: name format, name matches the folder, description length",
+        "Look for a trigger phrase in the description (\"use when ...\")",
+        "Check the body: unclosed code fences, referenced files that do not exist"
+      ],
+      "watch": [
+        "A name that does not match its folder never loads, and nothing tells you",
+        "Lint proves the file is loadable, not that it is good"
+      ],
+      "notes": "Runs in milliseconds. Belongs in CI on every commit."
+    },
+    {
+      "kind": "type",
+      "id": "security",
+      "number": 2,
+      "group": "Static · free",
+      "title": "Security scan",
+      "question": "Does the skill ask the agent to do something hostile?",
+      "method": [
+        "Match every file against known-bad patterns: instruction overrides, hidden text, credential paths, data sent to remote hosts, piped installs",
+        "Score by severity, with repeat hits on the same rule counting less each time",
+        "Verdict bands: safe, review first, do not install"
+      ],
+      "watch": [
+        "Static scans have false positives; a skill about SSH will mention ~/.ssh",
+        "Never run the skill to test it. Read it."
+      ],
+      "notes": "A malicious skill is a prompt injection with a README. The agent obeys it because it looks like configuration."
+    },
+    {
+      "kind": "type",
+      "id": "routing",
+      "number": 3,
+      "group": "Static · free",
+      "title": "Offline routing",
+      "question": "Does the description use the words users type, without colliding with neighbouring skills?",
+      "method": [
+        "Put every installed skill's description in a catalog",
+        "Rank the catalog against sample prompts with plain text similarity",
+        "Positives must rank your skill first; negatives must rank the rightful owner above it; no two descriptions may be near-duplicates"
+      ],
+      "watch": [
+        "This is not how the real harness routes, so a pass here is not proof of triggering",
+        "When a positive fails, fix the description, not the prompt"
+      ],
+      "notes": "Free and deterministic. It caught a real vocabulary gap in the course's sample skill."
+    },
+    {
+      "kind": "type",
+      "id": "trigger",
+      "number": 4,
+      "group": "Live · agent runs",
+      "title": "Trigger eval",
+      "question": "Does the real harness load the skill when it should, and only then?",
+      "method": [
+        "Write prompts that should trigger and prompts that should not; never name the skill",
+        "Run each prompt several times through the harness and watch for the skill being loaded",
+        "Count a prompt as triggered when at least half its runs fire; report precision and recall"
+      ],
+      "watch": [
+        "Testing only positives rewards a description that hijacks everything",
+        "Triggering is random; one run per prompt tells you nothing"
+      ],
+      "notes": "The name and description are the whole triggering mechanism. Re-run this after every edit to them."
+    },
+    {
+      "kind": "type",
+      "id": "deterministic",
+      "number": 5,
+      "group": "Live · agent runs",
+      "title": "Deterministic grading",
+      "question": "Does the output follow the rules we can check with code?",
+      "method": [
+        "Turn every checkable rule into a function: regex for the format, a length limit, a required line",
+        "Prove the grader first: a hand-written perfect answer must pass, a wrong one must fail",
+        "Report pass rate per rule, not one blended score"
+      ],
+      "watch": [
+        "A grader that rejects the oracle measures the grader, not the skill",
+        "Rules a regex cannot express go to the judge, not into a looser regex"
+      ],
+      "notes": "Code graders are cheap, reproducible, and tell you exactly which rule broke."
+    },
+    {
+      "kind": "type",
+      "id": "ab",
+      "number": 6,
+      "group": "Live · agent runs",
+      "title": "Paired A/B comparison",
+      "question": "How much better is the agent with the skill than without it?",
+      "method": [
+        "Same prompt, same model, same tools, same fresh workspace; the only difference is whether the skill files exist",
+        "Pair each with-skill run with a without-skill run of the same case",
+        "Report the difference in pass rate, the skill lift, never the absolute"
+      ],
+      "watch": [
+        "A flag that hides the skill is not enough; the files must be absent or the agent can read them",
+        "With skill 100 percent means nothing if the baseline was already 95"
+      ],
+      "notes": "This is the eval everyone means by \"does the skill work\". Everything else supports it."
+    },
+    {
+      "kind": "type",
+      "id": "judge",
+      "number": 7,
+      "group": "Live · judge calls",
+      "title": "LLM-as-judge",
+      "question": "What about the rules only a reader can check?",
+      "method": [
+        "Rubric grader: one output, a list of binary assertions, pass or fail with quoted evidence",
+        "Pairwise comparator: two outputs labelled A and B, judged in both orders, blind to which had the skill",
+        "Structured output only; a score parsed out of prose is a bug waiting to happen"
+      ],
+      "watch": [
+        "Use a different model from the one under test",
+        "Feed the judge an empty reply and \"I don't know\" first; both must fail",
+        "Read the failures: the course's judge counted a code fence as commentary until someone looked"
+      ],
+      "notes": "Treat the judge as an instrument that needs calibration, not as ground truth."
+    },
+    {
+      "kind": "type",
+      "id": "trajectory",
+      "number": 8,
+      "group": "Live · agent runs",
+      "title": "Trajectory eval",
+      "question": "Did the agent follow the procedure and respect the prohibitions?",
+      "method": [
+        "Record every tool call the agent makes, in order",
+        "Compliance: required steps happened, and in the right order (skill loaded before the work started)",
+        "Boundary: forbidden actions never happened, even when the user asked for them"
+      ],
+      "watch": [
+        "A perfect output can come from a skipped procedure; only the tool log shows it",
+        "The course's sample skill lost this one: asked directly, the agent ran git commit anyway"
+      ],
+      "notes": "Score is trigger times the share of procedure steps followed, and any broken prohibition sets it to zero. No trigger, no score."
+    },
+    {
+      "kind": "type",
+      "id": "stats",
+      "number": 9,
+      "group": "Analysis · no model",
+      "title": "Statistics over repeated runs",
+      "question": "Is the lift real, or noise?",
+      "method": [
+        "pass@k: how often at least one of k attempts passes; pass^k: how often all k do",
+        "Bootstrap the paired differences to get an interval; if it straddles zero, you have not shown anything",
+        "A permutation test on the signs of the differences gives a p-value with no distribution assumptions"
+      ],
+      "watch": [
+        "Eight pairs cannot resolve a twenty-point effect; the noise floor is roughly one over the square root of the pair count",
+        "One run is an anecdote"
+      ],
+      "notes": "A finding that looks solid on one run is often refuted by the fifth."
+    },
+    {
+      "kind": "type",
+      "id": "regression",
+      "number": 10,
+      "group": "Analysis · no model",
+      "title": "Regression check",
+      "question": "Did anything get worse since the last run you trusted?",
+      "method": [
+        "Save a baseline: the key metrics plus a hash of the skill's files",
+        "On every later run compare each metric against the baseline with a tolerance",
+        "A drop after the skill changed is expected churn; a drop with no change is drift in the model or harness"
+      ],
+      "watch": [
+        "Without the content hash you cannot tell your edit from the world moving under you",
+        "Skills rot; a check nobody runs catches nothing"
+      ],
+      "notes": "Cheap to run because it reads saved results. The expensive part is refreshing them."
+    },
+    {
+      "kind": "type",
+      "id": "efficiency",
+      "number": 11,
+      "group": "Analysis · no model",
+      "title": "Efficiency",
+      "question": "What does the improvement cost in tokens, money and time?",
+      "method": [
+        "Take token counts from the API's usage data, including cached input; never estimate from text length",
+        "Compare quality delta against cost delta per arm",
+        "Classify: better and cheaper, a trade-off, cheaper but weaker, worse on both, or reject"
+      ],
+      "watch": [
+        "Loading a skill costs extra turns, and every turn reads the whole context again",
+        "Cost per passing run is the fair comparison between two skills"
+      ],
+      "notes": "Quality up and cost up is a decision, not a verdict. Say the numbers and let the owner choose."
+    },
+    {
+      "kind": "rules",
+      "id": "rules",
+      "eyebrow": "What every good eval setup agrees on",
+      "title": "Six rules that matter more than any one eval",
+      "rules": [
+        "Test the description before the body. A skill that does not load cannot help.",
+        "Grade with code where you can, and prove the grader on a known-good and a known-bad answer.",
+        "Pair the with and without runs, hold everything else fixed, report the delta with an interval.",
+        "Grade the end state and the tool log, not the transcript's narration.",
+        "Keep the skill files physically absent from the baseline workspace.",
+        "Save every raw row. Analysis should never need a new run."
+      ],
+      "notes": "If the audience remembers nothing else, these six."
+    },
+    {
+      "kind": "close",
+      "id": "close",
+      "eyebrow": "Where to start",
+      "title": "Three free checks, then one trigger eval, then one A/B",
+      "text": "Start with three test cases. If the skill helps on three, add five more. Twenty to fifty for CI. A hundred or more before you publish a number.",
+      "notes": "Small first. The eval that runs is worth more than the perfect eval that does not exist yet."
+    }
+  ]
+}

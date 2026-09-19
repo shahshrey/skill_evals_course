@@ -1,0 +1,59 @@
+{
+  "v": 4,
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-09-19T17:27:44Z"
+  },
+  "title": "Skill evals: the eleven types",
+  "order": [
+    "cover",
+    "what",
+    "map",
+    "lint",
+    "security",
+    "routing",
+    "trigger",
+    "deterministic",
+    "ab",
+    "judge",
+    "trajectory",
+    "stats",
+    "regression",
+    "efficiency",
+    "rules",
+    "close"
+  ],
+  "sections": {
+    "intro": {
+      "description": "What a skill is and why it needs evaluating",
+      "start": "cover"
+    },
+    "static": {
+      "description": "Three checks that cost nothing",
+      "start": "lint"
+    },
+    "live": {
+      "description": "Five evals that run the real agent",
+      "start": "trigger"
+    },
+    "analysis": {
+      "description": "Three analyses over saved runs",
+      "start": "stats"
+    },
+    "wrap": {
+      "description": "The rules and where to start",
+      "start": "rules"
+    }
+  },
+  "faces": {
+    "domine": {
+      "family": "Domine",
+      "href": "https://fonts.googleapis.com/css2?family=Domine:wght@400..700&display=swap"
+    },
+    "ibm-plex-sans": {
+      "family": "IBM Plex Sans",
+      "href": "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap"
+    }
+  },
+  "designSystems": []
+}

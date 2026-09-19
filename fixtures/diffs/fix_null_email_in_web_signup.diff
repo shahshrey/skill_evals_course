@@ -1,0 +1,11 @@
+diff --git a/acme/web/signup.py b/acme/web/signup.py
+--- a/acme/web/signup.py
++++ b/acme/web/signup.py
+@@ -12,7 +12,9 @@ def create_account(form: dict) -> Account:
+     email = form.get("email")
+-    account = Account(email=email.lower())
++    if not email:
++        raise SignupError("email is required")
++    account = Account(email=email.strip().lower())
+     account.save()
+     return account

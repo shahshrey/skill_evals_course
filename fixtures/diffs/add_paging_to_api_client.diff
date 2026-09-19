@@ -1,0 +1,19 @@
+diff --git a/acme/api/client.py b/acme/api/client.py
+--- a/acme/api/client.py
++++ b/acme/api/client.py
+@@ -1,9 +1,16 @@
+ import requests
+ 
+ 
+-def fetch_orders(base_url: str, token: str) -> list[dict]:
+-    response = requests.get(f"{base_url}/orders", headers={"Authorization": token})
++def fetch_orders(base_url: str, token: str, page: int = 1, page_size: int = 100) -> list[dict]:
++    # The orders endpoint now supports server-side paging. Callers that want
++    # everything can loop over pages until an empty list comes back.
++    response = requests.get(
++        f"{base_url}/orders",
++        headers={"Authorization": token},
++        params={"page": page, "page_size": page_size},
++    )
+     response.raise_for_status()
+     return response.json()

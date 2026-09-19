@@ -1,0 +1,10 @@
+.venv/
+logs/
+__pycache__/
+*.pyc
+deck/qa/
+
+# secrets
+.env
+.env.*
+results/

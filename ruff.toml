@@ -1,0 +1,11 @@
+# Lint settings for the course. `ruff check .` from this folder uses them.
+line-length = 120
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "SIM", "RUF", "ASYNC", "ISC"]
+
+[lint.per-file-ignores]
+# The deck's words live in long strings on purpose; wrapping them would only hurt.
+"deck/content.py" = ["E501"]
+"deck/build.py" = ["E501"]

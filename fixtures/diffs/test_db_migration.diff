@@ -1,0 +1,13 @@
+diff --git a/tests/db/test_migrations.py b/tests/db/test_migrations.py
+--- a/tests/db/test_migrations.py
++++ b/tests/db/test_migrations.py
+@@ -20,3 +20,11 @@ def test_migrations_apply_cleanly(fresh_db):
+     run_migrations(fresh_db)
+     assert fresh_db.table_exists("orders")
++
++
++def test_migrations_are_idempotent(fresh_db):
++    # Running the migration set twice must not fail or duplicate rows.
++    run_migrations(fresh_db)
++    run_migrations(fresh_db)
++    assert fresh_db.count("schema_version") == 1

@@ -1,0 +1,15 @@
+diff --git a/acme/cli/README.md b/acme/cli/README.md
+--- a/acme/cli/README.md
++++ b/acme/cli/README.md
+@@ -3,6 +3,12 @@
+ 
+ Run `acme --help` to list commands.
+ 
++## Environment variables
++
++| Variable | Purpose |
++|---|---|
++| `ACME_TOKEN` | API token used for every request |
++| `ACME_URL` | Base URL, defaults to https://api.acme.test |
++
+ ## Reporting bugs
