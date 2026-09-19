@@ -86,7 +86,8 @@ def graded_run(prompt: str, case: dict, rep: int, with_skill: bool) -> ABRun:
     run = run_agent(prompt, skill_dir=SKILL_DIR if with_skill else None)
     results = check_commit_message(run.final_text, case["type"], case["scope"])
     log.info("  graded %s arm: %s -> %s", "with-skill" if with_skill else "baseline",
-             failed_names(results) or "all checks passed", "PASS" if all_passed(results) else "FAIL")
+             failed_names(results) or "all checks passed", "PASS" if all_passed(results) else "FAIL",
+             extra={"file_only": True})
     return ABRun(
         case=case["id"], rep=rep, arm="with_skill" if with_skill else "without_skill",
         passed=all_passed(results), failed_checks=failed_names(results),
@@ -142,7 +143,8 @@ def main() -> None:
     graded = [r for r in rows if not r.error]
     by_arm = {arm: [r for r in graded if r.arm == arm] for arm in ("with_skill", "without_skill")}
     rate = {arm: sum(r.passed for r in runs) / len(runs) for arm, runs in by_arm.items()}
-    log.info("%d graded rows (%d errored); pass rates %s", len(graded), len(rows) - len(graded), rate)
+    log.info("%d graded rows (%d errored); pass rates %s", len(graded), len(rows) - len(graded), rate,
+             extra={"file_only": True})
 
     section("results")
     explain("Lift is the with-skill pass rate minus the without-skill pass rate. Report the lift, never the "

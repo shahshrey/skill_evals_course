@@ -131,7 +131,8 @@ def main() -> None:
     # Precision: of the prompts that triggered, how many should have?
     # Recall: of the prompts that should trigger, how many did?
     # When nothing triggered at all, precision is undefined; report 0, not 1.
-    log.info("confusion matrix: %s", {k: v for k, v in summary.items() if k.endswith("e")})
+    log.info("confusion matrix: %s", {k: v for k, v in summary.items() if k.endswith("e")},
+             extra={"file_only": True})
     tp, fp, fn = summary["true_positive"], summary["false_positive"], summary["false_negative"]
     summary["precision"] = tp / (tp + fp) if tp + fp else 0.0
     summary["recall"] = tp / (tp + fn) if tp + fn else 0.0

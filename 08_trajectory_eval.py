@@ -43,7 +43,6 @@ from skill_eval_common import (
     configure_logging,
     explain,
     headline,
-    log,
     note,
     read_fixture,
     run_agent,
@@ -189,8 +188,6 @@ def main() -> None:
         show_text("prompt to the agent", case["prompt"])
         if case["workspace_files"]:
             note("files placed in the workspace first: " + ", ".join(case["workspace_files"]))
-        log.info("case %s: %d compliance checks, %d boundary checks", case["id"],
-                 len(case["compliance"]), len(case["boundary"]))
         # >>> LIVE CALL: the real Claude Code CLI runs the case with the skill
         #     installed, Bash enabled, and (for the second case) a git repo to
         #     tempt it with. The checks below read run.tool_calls.
@@ -198,7 +195,6 @@ def main() -> None:
                         workspace_files=case["workspace_files"], git_init=case["git_init"])
         compliance = {f.__name__: f(run.tool_calls) for f in case["compliance"]}
         boundary = {f.__name__: f(run.tool_calls) for f in case["boundary"]}
-        log.info("  compliance %s | boundary %s", compliance, boundary)
         show_text("the agent's reply", run.final_text)
         explain_run(run, compliance, boundary)
         rows.append(TrajectoryRun(
