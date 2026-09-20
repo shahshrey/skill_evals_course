@@ -1,35 +1,42 @@
 """
-Eval type 10: catching the day the numbers quietly get worse.
+Chapter ten: the day your numbers quietly got worse and nobody noticed.
 
-Skills go off. A description that reliably triggered in March stops triggering
-after the software behind it changes how it picks skills. A rule you tightened
-in the body breaks a case that used to pass. Nobody spots it, because nobody
-goes back and runs the tests again.
+09 told you whether today's result was real. It said nothing about tomorrow.
+Skills go off. A description that triggered reliably in March stops
+triggering in June, because the software underneath changed how it picks
+skills. A rule you tightened in the body breaks a case that used to sail
+through. Nobody spots either one. Nobody goes back and runs the tests a
+second time.
 
-This is what makes going back worth the trouble. It takes the numbers from the
-last run you were happy with, compares today's against them, and complains
-loudly when something has fallen.
+This is what makes going back cheap enough to bother with. It takes the
+numbers from the last run you were happy with, holds today's up against
+them, and makes a scene when something has fallen.
 
-The useful part is that it tells two very different situations apart.
+The useful part is that it can tell two situations apart. No single pass
+rate ever could.
 
-You edited the skill and a number dropped. That is the normal cost of a
-change. It gives you a warning and leaves it to you to decide whether the
-trade was worth making.
+You edited the skill and a number dropped. That is the ordinary price of
+changing something. You get a warning. Whether the trade was worth it stays
+your call.
 
-You did not touch the skill and a number dropped anyway. Something underneath
-you moved: the model, or the software running it. That is an error, because
-nothing you did caused it and you would want to know.
+You touched nothing and a number dropped anyway. Then something underneath
+you moved. The model, or the software running it. You found out from a test
+rather than from a colleague. That is an error, and it stops the build.
 
-It tells them apart by fingerprinting the skill folder. Same fingerprint means
-you changed nothing.
+It tells the two apart by fingerprinting the skill folder. Same fingerprint,
+same skill. Any drop belongs to somebody else.
 
-Running this costs nothing. It only reads what 04, 05 and 06 already saved.
-Refreshing those files is the expensive part.
+Running this costs nothing. It reads what 04, 05 and 06 already saved.
+Refreshing those files is where all the money went.
 
 Run:  python 10_regression_check.py --save-baseline    # after a run you trust
       python 10_regression_check.py                    # every run after that
-It exits with an error code when something dropped for no reason you caused,
-so an automated build can stop the change from going in.
+It exits with an error code when something fell for a reason you did not
+cause. An automated build can then stop the change going in while you are
+asleep.
+
+One question is left. Your skill works, and it holds up. What is it costing
+you every time it runs? 11_efficiency_eval.py asks.
 """
 
 from __future__ import annotations
@@ -54,18 +61,20 @@ from skill_eval_common import (
 )
 
 BASELINE_PATH = RESULTS_DIR / "baseline.json"
-# Anything that falls further than this counts as a real drop. Anything smaller
-# is just the normal wobble between runs. Set it against how many runs you do:
-# with 8 pairs in 06, one unlucky run moves the result by 0.125 on its own, so
-# a limit of 0.10 would fire on pure chance. Tighten it as you add more runs.
+# Anything falling further than this counts as a real drop. Anything smaller
+# is the ordinary wobble 09 spent a whole chapter on. Set it against how many
+# runs you do. With 8 pairs in 06, one unlucky run shifts the result by 0.125
+# on its own. A limit of 0.10 would fire on nothing at all. Tighten it as you
+# buy more runs, and not before.
 TOLERANCE = 0.25
 
 
 def skill_hash() -> str:
     """Boil the whole skill folder down to a short fingerprint.
 
-    Every file in the folder, and its name, goes into the fingerprint, so
-    editing a single character anywhere changes it.
+    Every file in the folder goes in, and so does its name. Change a single
+    character anywhere and you get a different fingerprint. That is the only
+    thing standing between "you broke it" and "it broke".
 
     Returns:
         Twelve characters that stand for the current contents of the skill.
@@ -98,15 +107,17 @@ def pass_rate(path: Path, arm: str | None = None) -> float | None:
 
 
 def current_metrics() -> dict[str, float | None]:
-    """Pull today's numbers out of the files the earlier scripts saved.
+    """Pull today's numbers out of the files the earlier chapters saved.
 
-    Four things get watched. How often the skill loaded when it should have
-    (trigger_precision and trigger_recall), how often the answers passed every
-    rule (deterministic_pass_rate), and how much difference the skill made
-    (ab_lift).
+    Four things get watched, one from each chapter that produced a number
+    worth watching. How often the skill loaded when it should have, and how
+    often it barged in when it should not, both from 04 (trigger_precision
+    and trigger_recall). How often the answers passed every rule, from 05
+    (deterministic_pass_rate). And how much difference the skill made, from
+    06 (ab_lift).
 
-    Any results file that is missing gets produced by running its script first,
-    which does cost money.
+    A missing results file gets made by running its script first. That is
+    the one way this chapter can cost you money.
 
     Returns:
         The four numbers, keyed by name. A number is missing when there was
@@ -128,33 +139,33 @@ def current_metrics() -> dict[str, float | None]:
 def main() -> int:
     configure_logging("10_regression_check")
     show_skill()
-    # >>> THIS COSTS NOTHING. Nothing runs and nothing goes over the network.
-    #     All this does is compare what 04, 05 and 06 already saved against the
-    #     numbers stored last time.
+    # >>> THIS COSTS NOTHING. No agent runs, nothing touches the network. All
+    #     that happens here is that what 04, 05 and 06 wrote down gets held up
+    #     against what they wrote down last time.
     metrics = current_metrics()
     fingerprint = skill_hash()
-    log.info("today's numbers, read from the results folder: %s", metrics)
-    log.info("the skill folder currently fingerprints as %s", fingerprint)
+    log.info("today's numbers, straight out of the results folder: %s", metrics)
+    log.info("the skill folder right now fingerprints as %s", fingerprint)
 
     if "--save-baseline" in sys.argv:
         BASELINE_PATH.write_text(json.dumps({"skill_hash": fingerprint, "metrics": metrics}, indent=2))
-        section("saving today's numbers to compare against later")
-        table("these are the numbers to beat from now on", ["what was measured", "value"],
+        section("writing today down, to be held against you later")
+        table("the numbers to beat from here on", ["what was measured", "value"],
               [[k, v] for k, v in metrics.items()])
-        headline(f"saved. Everything from here on gets compared against these, for skill {fingerprint}", good=True)
+        headline(f"saved. Every run from now on gets compared against these, for skill {fingerprint}", good=True)
         return 0
 
     if not BASELINE_PATH.exists():
-        sys.exit("There is nothing to compare against yet. Do a run you are happy with, then run this again "
-                 "with --save-baseline to record it.")
+        sys.exit("There is nothing to compare against yet. Get a run you are happy with, then come back and "
+                 "run this with --save-baseline to record it.")
     baseline = json.loads(BASELINE_PATH.read_text())
     skill_changed = baseline["skill_hash"] != fingerprint
-    log.info("the numbers to beat: %s, taken when the skill fingerprinted as %s",
+    log.info("here is what you were beating: %s. It was taken when the skill fingerprinted as %s",
              baseline["metrics"], baseline["skill_hash"])
-    section("today's numbers against the ones we saved")
-    note(f"The skill {'CHANGED' if skill_changed else 'has not changed'} since those numbers were saved "
-         f"({baseline['skill_hash']} -> {fingerprint}). That decides whether a drop is your doing or "
-         "something else's.")
+    section("today, against the day you were happy")
+    note(f"The skill {'CHANGED' if skill_changed else 'has not changed'} since those numbers were written down "
+         f"({baseline['skill_hash']} -> {fingerprint}). Everything below hangs on that one fact. It decides "
+         "whether a drop is your doing or somebody else's.")
 
     exit_code = 0
     rows = []
@@ -164,7 +175,7 @@ def main() -> int:
             rows.append([name, before, now, "no data"])
             continue
         dropped = before - now > TOLERANCE
-        log.info("%s was %.2f, now %.2f. Anything worse than %.2f down counts as a real drop, so: %s",
+        log.info("%s was %.2f and is now %.2f. The line is a fall of more than %.2f. This one is: %s",
                  name, before, now, TOLERANCE, "DROPPED" if dropped else "ok")
         if not dropped:
             status = "ok"
@@ -174,10 +185,13 @@ def main() -> int:
             status = "ERROR it fell and nobody touched the skill"
             exit_code = 1
         rows.append([name, before, now, status])
-    table("how each number compares", ["what was measured", "was", "now", "verdict"], rows)
+    table("every number, then and now", ["what was measured", "was", "now", "verdict"], rows)
     headline("nothing dropped that you did not cause yourself" if exit_code == 0 else
-             "something dropped and nobody edited the skill, so something underneath us moved",
+             "something dropped and nobody edited the skill. Something underneath you moved",
              good=exit_code == 0)
+    note("That is the story more or less told. One thing left. Your skill works and it keeps working. But "
+         "every request it wins costs more than one it loses. 11_efficiency_eval.py reads the same saved runs "
+         "and puts a price on it.")
     return exit_code
 
 

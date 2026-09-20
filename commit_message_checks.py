@@ -1,18 +1,20 @@
 """
-The plain code checks for the commit-message skill.
+An interlude: the ruler everyone else borrows.
 
-A plain check is an ordinary function. Text goes in, pass or fail comes out,
-and you get the same answer every single time you run it. No AI is involved
-anywhere, which is what makes these worth having: they cost nothing, they are
-instant, and they never change their mind.
+Not a chapter. This is the measuring stick that 05, 06, 08 and 10 all pick
+up. It lives in one place so four scripts cannot quietly disagree about what
+a good commit message is.
 
-Four of the tests share these checks (05, 06, 08 and 10), so they live here in
-one file rather than being copied four times.
+Every check here is an ordinary function. Text in, pass or fail out. Same
+answer every time, for ever. No AI anywhere. That last part is what makes
+them worth having. They are free. They are instant. They never wake up in a
+different mood. Later you will meet a marker that does, and you will be glad
+these exist to check it against.
 
-Every check reports its own name and a short note about what it saw. That way
-a report can say "subject_max_50 failed: 61 characters" instead of "score
-0.7". The first tells you what to change in the skill. The second tells you
-nothing at all.
+Each check reports its own name and a short note on what it saw. So a report
+here can say "subject_max_50 failed: 61 characters" rather than "score 0.7".
+One of those tells you which line to edit. The other gives you a number and
+wishes you luck.
 """
 
 from __future__ import annotations
@@ -21,10 +23,11 @@ import re
 
 from pydantic import BaseModel, Field
 
-# These are lifted straight from the Rules section of
-# skills/commit-message/SKILL.md. Change the skill and you must change these
-# too, then run 05_deterministic_grading.py. Its first step feeds the checks a
-# message known to be correct and refuses to go on if they reject it.
+# Lifted straight out of the Rules section of skills/commit-message/SKILL.md.
+# Edit the skill and you have to edit these too. Otherwise you are marking
+# this week's work against last week's rules. 05_deterministic_grading.py
+# catches you. It starts by feeding these checks a message known to be
+# perfect, and stops dead if they reject it.
 ALLOWED_TYPES = {"feat", "fix", "docs", "refactor", "test", "chore"}
 ALLOWED_SCOPES = {"api", "web", "cli", "db", "infra"}
 SUBJECT_MAX_CHARS = 50
@@ -37,28 +40,27 @@ ANY_FENCE = re.compile(r"```[a-z]*\n(.*?)\n```", re.DOTALL)
 
 
 class CheckResult(BaseModel):
-    """The outcome of one check."""
+    """What one rule made of one commit message."""
 
     name: str = Field(description="Which rule was checked, such as subject_max_50. Reports group on this.")
     passed: bool = Field(description="Did the message satisfy the rule?")
     detail: str = Field(default="",
-                        description="What the check actually saw, so a failure explains itself: the header it "
-                                    "read, the length it counted, the last line it found.")
+                        description="What the check saw, so a failure explains itself. The header it read, the "
+                                    "length it counted, the last line it found.")
 
 
 def extract_message(agent_text: str) -> str:
     """Pull the commit message out of whatever the agent wrote around it.
 
     Rule 6 of the skill says the message belongs in a ```text block. This
-    function is more forgiving than that: it takes a text block if there is
-    one, any other kind of code block if not, and failing both, the whole
-    reply.
+    function is more forgiving. It takes a text block if there is one. Any
+    other code block if not. Failing both, the whole reply.
 
-    That leniency matters for the head-to-head comparison. An agent that never
-    saw the skill has no idea it was meant to use a text block, and failing it
-    outright would tell you nothing about whether it can write a good commit
-    message. So the block rule is checked separately, on its own, and
-    everything else gets marked on the message itself.
+    The leniency is there for 06. One side of that comparison never saw the
+    skill and has no idea a text block was wanted. Failing it on a formatting
+    rule it was never told about says nothing about whether it can write a
+    good commit message. So the block rule stands on its own. Every other
+    rule is marked against the message itself.
 
     Args:
         agent_text: The agent's full reply.
@@ -78,7 +80,7 @@ def check_commit_message(
     expected_type: str | None = None,
     expected_scope: str | None = None,
 ) -> list[CheckResult]:
-    """Run every rule that can be checked without an AI.
+    """Run every rule that can be settled without asking anyone's opinion.
 
     Args:
         agent_text: The agent's full reply. The message is pulled out of it.
@@ -99,12 +101,11 @@ def check_commit_message(
     """
     message = extract_message(agent_text)
     lines = message.splitlines() or [""]
-    # We take the layout the skill asks for as given: header on the first line,
-    # the Refs line last, and the body in between. A message with no Refs line
-    # therefore loses its final body line to the Refs slot, and fails both the
-    # refs_trailer check and, if the body was only one line, has_body. That is
-    # a little unfair on paper and entirely fine in practice, because such a
-    # message was going to fail anyway.
+    # The layout the skill asks for is taken as given. Header first, Refs line
+    # last, body in between. So a message with no Refs line donates its final
+    # body line to the Refs slot and fails refs_trailer. If the body was one
+    # line long, it fails has_body too. Slightly unfair on paper. Fine in
+    # practice, since that message was failing anyway.
     header, trailer = lines[0], lines[-1]
     body = [line for line in lines[1:-1] if line.strip()]
 
@@ -146,7 +147,9 @@ def all_passed(results: list[CheckResult]) -> bool:
         results: What check_commit_message() returned.
 
     Returns:
-        True only when nothing failed. One failure fails the message.
+        True only when nothing failed. One failure fails the message. No
+        partial credit. Partial credit is how a skill ships at eighty per
+        cent correct.
     """
     return all(r.passed for r in results)
 
@@ -165,12 +168,12 @@ def failed_names(results: list[CheckResult]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# The test cases that every live test runs.
+# The cases every live test works through.
 #
 # One entry per sample set of changes, paired with the answer a careful
-# engineer would give. Keeping this list short is deliberate. Every live run
-# costs real money, and 4 cases times 2 sides times however many attempts adds
-# up faster than you would like.
+# engineer would give. The list is short on purpose. Every live run is
+# billed. Four cases, times two sides, times a few attempts, adds up faster
+# than anyone expects the first time.
 # ---------------------------------------------------------------------------
 
 COMMIT_CASES = [
@@ -182,11 +185,11 @@ COMMIT_CASES = [
 
 
 def commit_prompt(diff_text: str) -> str:
-    """Build the request we send the agent for every case.
+    """Build the request the agent gets for every case.
 
-    It never mentions the skill by name. Asking the agent to "use the
-    commit-message skill" would prove nothing, because the whole question is
-    whether it reaches for the skill on its own.
+    It never names the skill. Telling the agent to "use the commit-message
+    skill" would hand it the answer to the one question 04 spends real money
+    asking. Does it reach for the skill on its own?
 
     Args:
         diff_text: The code changes to write a message about.

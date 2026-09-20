@@ -1,37 +1,43 @@
 """
-Eval type 3, second version: will the right skill get picked, judged by meaning?
+Chapter three and a half: the same question, asked by something that reads.
 
-03_routing_offline.py ranks skills by counting shared words. That is free and
-it catches a description with the wrong vocabulary in it, but it has an
-obvious blind spot: it cannot see that "summarise my changes for git" and
-"write a commit message" are asking for the same thing. Not one word in common.
+03 ranked your skill by counting shared words. That has one blind spot you
+cannot patch. "Summarise my changes for git" and "write a commit message" are
+the same request. They share no useful words. Word counting will never see
+it, however carefully you choose your vocabulary. There is nothing to count.
 
-The real software can see that, because a model reads the descriptions.
-04_trigger_eval.py tests exactly that, but it pays for a full agent run per
-request per attempt, which adds up fast.
+The real software sees it, because a model reads the descriptions instead of
+matching letters. 04_trigger_eval.py tests exactly that. It pays for a whole
+agent run per request per attempt. You will not want to run 04 after every
+small edit to a sentence.
 
-This script sits between the two. It hands a small, fast model the whole list
-of installed descriptions plus one request, and asks a single multiple-choice
-question: which of these should handle it? The model understands meaning, so
-it catches what word counting misses, and it answers in about a tenth of a
-second, cheap enough to run after every single edit to your description.
+So this one sits in the middle. It hands a small fast model the list of
+installed descriptions and one request, and asks one multiple-choice
+question. Which of these should take it? Meaning included, answer back in
+about a tenth of a second. Cheap enough to run every time you touch the
+description. That is the point.
 
-It is still not the real software, so 04 has the final word. But a description
-that fails here will fail there too, and here you find out in seconds.
+Still not the real software. 04 has the last word. But a description that
+fails here will fail there too. Here it fails in seconds instead of minutes
+and money.
 
-One nice extra: the answer comes back with a confidence figure for every
-option, not just a winner. That tells you three different things.
+There is a bonus in the answer. It comes back with a confidence figure for
+every option, not just the winner. That tells you three things.
 
-  High confidence on the right skill means your description is doing its job.
+  Confident on the right skill. Your description is doing its job.
 
-  Confidence split between two skills means those two descriptions are
-  competing for the same work. That is the same clash 03 looks for, caught by
-  meaning this time rather than by shared words.
+  Confidence split between two skills. Those two descriptions are competing
+  for the same work. That is the clash 03 measures, found by meaning this
+  time rather than by shared words.
 
-  Confidence on "none" for a request that belongs elsewhere means your
-  description knows when to keep out of it.
+  Confidence on "none" for a request that belongs to nobody. Your description
+  knows when to stay out of it. That is harder to teach than it sounds, and
+  03 could not ask about it at all.
 
 Needs TYPESAFE_API_KEY set in your environment or in a .env file.
+
+After this, the guessing stops. 04_trigger_eval.py installs the skill and
+watches the real thing decide.
 
 Run:  python 03b_routing_semantic.py
 """
@@ -59,12 +65,12 @@ CATALOG_DIRS = [SKILL_DIR, *sorted((FIXTURES_DIR / "catalog").iterdir())]
 OUR_SKILL = "commit-message"
 NONE = "none"                 # the option meaning "none of these fits"
 
-# Same setup as 03. Some requests should land on our skill, the rest should
-# land somewhere else, and each of those names the skill that ought to win.
+# The same lineup as 03. Some requests should land on our skill. The rest
+# belong elsewhere, and each names who ought to win.
 #
-# Two of them belong to no skill at all, which 03 had no way of expressing. A
-# chooser that always picks something rather than admitting nothing fits will
-# fail those two, and that failure is worth catching.
+# Two of them belong to nobody. 03 had no way to ask about that. A chooser
+# that would rather pick something than admit nothing fits will fail those
+# two. You want to know that about your chooser.
 POSITIVE_PROMPTS = [
     "write a commit message for this diff",
     "can you draft the commit for the changes I just made",
@@ -78,11 +84,15 @@ NEGATIVE_PROMPTS = [
     ("what is the capital of Portugal", NONE),
     ("rename the variable x to count in main.py", NONE),
 ]
-COLLISION_SHARE = 0.30        # a runner-up this confident means two descriptions are competing
+COLLISION_SHARE = 0.30        # a runner-up this confident is not a runner-up, it is a rival
 
 
 def route(client: TypeSafeClient, prompt: str, catalog: dict[str, str]) -> tuple[str, dict[str, float]]:
     """Ask the model which skill a request belongs to.
+
+    The "none" option is added here rather than listed with the skills,
+    because it is not a skill. It is the escape hatch. Without one, the model
+    has no way to tell you that your whole catalog is beside the point.
 
     Args:
         client: A connected TypeSafe client.
@@ -91,16 +101,17 @@ def route(client: TypeSafeClient, prompt: str, catalog: dict[str, str]) -> tuple
 
     Returns:
         The skill it picked, and how confident it was about every option
-        including "none". The confidences add up to 1.
+        including "none". The confidences add up to 1, so a strong second
+        place can only come out of the winner's share.
 
     Example:
         pick, confidence = route(client, "write a commit message", catalog)
     """
     criteria = dict(catalog)
     criteria[NONE] = "No installed skill applies to this request."
-    # >>> THIS SPENDS MONEY, but barely. One request to a small fast model,
-    #     carrying the whole list of skills. It picks one and says how
-    #     confident it is about each.
+    # >>> THIS SPENDS MONEY, but barely. One question to a small fast model,
+    #     carrying the whole catalog with it. It picks one and tells you how
+    #     sure it was about every option. That last part is the useful bit.
     result = client.system_one(
         {"user_request": prompt, "installed_skills": catalog},
         {"skill": Choice(
@@ -111,7 +122,7 @@ def route(client: TypeSafeClient, prompt: str, catalog: dict[str, str]) -> tuple
     )
     answer = result.choices["skill"]
     probabilities = {k: round(v, 3) for k, v in answer.probabilities.items()}
-    log.info("for the request %r it picked %s, %.0f%% sure. Full breakdown: %s",
+    log.info("someone types %r. It picks %s, %.0f%% sure. The rest of its confidence: %s",
              prompt, answer.choice, answer.confidence * 100, probabilities)
     return answer.choice, probabilities
 
@@ -119,8 +130,10 @@ def route(client: TypeSafeClient, prompt: str, catalog: dict[str, str]) -> tuple
 def runner_up_share(probabilities: dict[str, float], winner: str) -> tuple[str, float]:
     """Find the second-place skill and how confident the model was about it.
 
-    A close second means two descriptions are competing for the same work, and
-    which one wins on any given day is close to a coin toss.
+    A close second is the interesting result. It means two descriptions are
+    competing for the same work. Which one wins on a given day is close to a
+    coin toss. Winning is not the same as winning comfortably. Only the second
+    kind survives a reworded request.
 
     Args:
         probabilities: How confident the model was about each option.
@@ -142,7 +155,7 @@ def main() -> int:
     for skill_dir in CATALOG_DIRS:
         skill = load_skill(skill_dir)
         catalog[skill.name] = skill.description
-    log.info("%d skills to choose between: %s", len(catalog), sorted(catalog))
+    log.info("%d skills on the table, plus the option of none of them: %s", len(catalog), sorted(catalog))
     client = TypeSafeClient()
     failures = 0
 

@@ -1,35 +1,48 @@
 """
-Eval type 4: does the skill get picked up at all?
+Chapter four: the first one that sends you a bill.
 
-A skill that never loads is worth nothing, however good the instructions
-inside it are. When you ask Claude Code something, it does not read every
-skill you have installed. It reads each one's name and one-line description,
-picks whichever looks relevant, and only then opens the full instructions. So
-that one line is doing all the work.
+Everything so far has been you and a text file. 03 and 03b gave you two
+educated guesses about whether your description would win the request. Both
+were arithmetic standing in for a decision they never watched happen. Now
+you stop guessing. This installs the skill in a fresh folder, starts the real
+Claude Code, types a real request, and watches.
 
-This is the first test that spends money, and the one to re-run every single
-time you reword the description.
+The thing under test is still that one line of description. When you ask
+Claude Code for something, it does not read your instructions. It reads each
+installed skill's name and one-line description, picks the one that looks
+relevant, and only then opens what you wrote. Everything below the
+description is a prize. The description has to win it alone.
 
-The idea is simple. Write some requests that ought to make the skill load, and
-some that ought not to. Run each of them a few times. Watch whether the skill
-actually gets opened.
+So this is the test you re-run every time you touch that sentence. That is
+why it is worth the money.
 
-Two mistakes almost everyone makes here:
+The method. Some requests that ought to load the skill, some that ought not
+to, each run a few times, and a count of what happened.
 
-  Only testing the requests that should work. Write a description saying "use
-  this for anything git related" and it will load for every commit message you
-  ask for. It will also barge in when you ask about rebasing, about pull
-  request descriptions, and about changelogs. You cannot see that problem
-  without testing requests that should be left alone.
+Two mistakes almost everyone makes. Both are comfortable ones.
 
-  Running each request once. The decision is not repeatable. Ask twice and you
-  can get two different answers. Run each request a few times and count it as
-  loaded when at least half the attempts load it.
+  Only testing the requests that should work. Write "use this for anything
+  git related" and it will load for every commit message you ask for. It
+  will also barge in on rebases, pull request descriptions and changelogs.
+  You will never see it, because you only tested the cases you wanted to
+  pass.
 
-The two numbers at the bottom are what you tune the description against. If
-it fires when it should not, the description is too greedy. If it misses
-requests it should catch, the description is missing the words real people
-type.
+  Running each request once. The decision is not repeatable. Ask the same
+  question twice and you can get two different answers. One run tells you
+  almost nothing. Run each a few times and take a majority.
+
+One subtler point, planted back in the shared kit. Whether the skill was
+installed and whether the agent went and read it are two different
+questions. skill_was_loaded() below counts both routes. Either way your
+description did its job.
+
+The two numbers at the end are the dials. Firing when it should not means
+the description is greedy. Missing requests it should catch means it lacks
+the words people type. They pull in opposite directions. That is what makes
+writing a description harder than writing the skill.
+
+This proves the skill turns up. It says nothing about whether the output is
+any good. That is 05_deterministic_grading.py, where the marking starts.
 
 Run:  python 04_trigger_eval.py
 Saves results/04_trigger_runs.jsonl and results/04_trigger_summary.json
@@ -58,17 +71,17 @@ from skill_eval_common import (
     table,
 )
 
-REPS = 2                    # three is common. More attempts, less noise, more money
+REPS = 2                    # three is common. More attempts, less noise, larger bill
 TRIGGER_THRESHOLD = 0.5     # counts as loaded when at least half the attempts load it
 
-# The requests that should load the skill never mention it by name. That would
-# be cheating: the point is to find out whether the description gets picked on
-# its own merits.
+# None of the requests that should load the skill mentions it by name. Naming
+# it would be cheating. Cheating here means shipping a description you never
+# tested. The whole question is whether it gets picked on its own.
 #
-# The requests that should not load it are deliberately close to the mark. They
-# are all about git, so a sloppy description will swallow them. Each request
-# carries a short id, because two requests that start with the same words are
-# impossible to tell apart in a report otherwise.
+# The requests that should not load it sit close to the line on purpose. All
+# are about git, so a greedy description swallows them whole. Each request
+# carries a short id. Two prompts that open with the same four words look
+# identical in a table.
 POSITIVE_PROMPTS = [(case["id"], commit_prompt(read_fixture(case["diff"]))) for case in COMMIT_CASES]
 NEGATIVE_PROMPTS = [
     ("neg-pr-description", "Write a pull request description for a branch that adds retry logic to the API client."),
@@ -92,18 +105,18 @@ class TriggerRun(BaseModel):
 
 
 def skill_was_loaded(run) -> bool:
-    """Decide whether the agent got hold of the skill's instructions.
+    """Decide whether the agent got hold of the skill's instructions at all.
 
-    There is more than one route in. Opening the skill properly is the normal
-    one, but an agent that spots SKILL.md sitting in the folder and reads the
-    file directly has the same instructions in front of it. Either way the
-    description did its job, so both count.
+    There is more than one door. Loading the skill properly is the front one.
+    But an agent that notices SKILL.md in the folder and reads the file has
+    the same words in front of it. Counting that as a miss would score the
+    mechanism rather than the outcome. Both count.
 
     Args:
         run: A finished AgentRun.
 
     Returns:
-        True if the skill's contents reached the agent.
+        True if the skill's instructions reached the agent, by either route.
     """
     if run.skill_invoked:
         return True
@@ -116,28 +129,29 @@ def main() -> None:
     show_skill()
     rows = []
     prompts = [(pid, p, True) for pid, p in POSITIVE_PROMPTS] + [(pid, p, False) for pid, p in NEGATIVE_PROMPTS]
-    log.info("%d requests that should load the skill and %d that should not, %d attempts each. "
-             "That is %d agent runs, and they cost real money.",
+    log.info("%d requests that should load the skill, %d that should not, %d attempts at each. That is %d "
+             "runs of the real thing. Every one is billed.",
              len(POSITIVE_PROMPTS), len(NEGATIVE_PROMPTS), REPS, len(prompts) * REPS)
 
     for prompt_id, prompt, should_trigger in prompts:
         for rep in range(REPS):
             section(f"case {prompt_id} attempt {rep}  (should load the skill: {should_trigger})")
             note("the request: " + prompt.replace("\n", " ")[:120] + ("..." if len(prompt) > 120 else ""))
-            # >>> THIS SPENDS MONEY. run_agent() starts the real Claude Code
-            #     program in a brand new folder with the skill installed. Four
-            #     turns is plenty: we only want to see whether the skill gets
-            #     opened, not wait for a finished commit message.
+            # >>> THIS SPENDS MONEY. run_agent() starts the real Claude Code in
+            #     a brand new folder with the skill installed. Four turns is
+            #     plenty. You are watching for the moment the skill gets
+            #     opened. Paying it to finish a commit message you will never
+            #     read is paying for nothing.
             run = run_agent(prompt, skill_dir=SKILL_DIR, max_turns=4)
             rows.append(TriggerRun(prompt_id=prompt_id, should_trigger=should_trigger, rep=rep,
                                    triggered=skill_was_loaded(run), model=run.model, error=run.error,
                                    cost_usd=run.cost_usd))
-            log.info("  the skill loaded: %s. It should have: %s. Verdict: %s", rows[-1].triggered, should_trigger,
+            log.info("  the skill loaded: %s. It should have: %s. So: %s", rows[-1].triggered, should_trigger,
                      "ok" if rows[-1].triggered == should_trigger else "MISMATCH")
 
-    # Now settle each request. Did at least half its attempts do the right
-    # thing? With two attempts that means one is enough. Raise REPS if you want
-    # a stricter majority.
+    # Now settle up. Each request gets one verdict. Did at least half its
+    # attempts do the right thing? With two attempts, one is enough. That is
+    # generous. Raise REPS and the majority gets harder to buy.
     section("results")
     summary = {"true_positive": 0, "false_positive": 0, "true_negative": 0, "false_negative": 0}
     result_rows = []
@@ -154,13 +168,14 @@ def main() -> None:
     table("how often each request loaded the skill",
           ["request", "should load it", "how often it did", "verdict"], result_rows)
 
-    # Two ways of being wrong, and they need fixing in opposite directions.
-    # Firing when it should not means the description is too greedy. Missing a
-    # request it should catch means the description lacks the words people use.
+    # Two ways of being wrong, pulling in opposite directions. Firing when it
+    # should not means the description is greedy. Missing a request it should
+    # catch means it lacks the words people use. Fix one carelessly and you
+    # cause the other. That is the whole game.
     #
-    # When nothing loaded the skill at all, the first number is undefined. We
-    # report it as 0 rather than 1, because a skill that never fires has not
-    # earned a perfect score.
+    # When nothing loaded the skill at all, the first number divides by zero.
+    # It is reported as 0 rather than 1. A skill that never fires has not
+    # earned a perfect score for never being wrong.
     log.info("counts: %s", {k: v for k, v in summary.items() if k.endswith("e")},
              extra={"file_only": True})
     tp, fp, fn = summary["true_positive"], summary["false_positive"], summary["false_negative"]
@@ -172,8 +187,8 @@ def main() -> None:
              f"Cost ${summary['total_cost_usd']}",
              good=summary["precision"] == 1.0 and summary["recall"] == 1.0)
     note("The first number is called precision, the second recall. A low first number means the description is "
-         "too greedy and grabs work that is not its own. A low second means it is missing the words people "
-         "actually type.")
+         "greedy. It keeps grabbing work that is not its own. A low second number means it is missing the words "
+         "people type. You will spend more time on that one sentence than on the skill itself.")
 
     save_jsonl(RESULTS_DIR / "04_trigger_runs.jsonl", rows)
     (RESULTS_DIR / "04_trigger_summary.json").write_text(json.dumps(summary, indent=2))

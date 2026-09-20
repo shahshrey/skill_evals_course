@@ -1,32 +1,46 @@
 """
-Eval type 6: the head-to-head test. Does the skill actually help?
+Chapter six: the one that can tell you your skill was never needed.
 
-This is the test people mean when they ask "does the skill work". Ask the same
-question twice, once with the skill installed and once without, mark both
-answers the same way, and look at the difference. Every serious benchmark of
-this kind boils down to this one loop.
+05 told you how many rules the agent got right with your skill installed. It
+could not tell you the only thing that matters. Did it need your skill to do
+that? Maybe a plain agent writes the same message. Maybe the model already
+knew. You cannot tell, because you never asked with the skill taken away.
 
-Three rules keep it honest:
+So ask. The same request, twice. Once with the skill installed. Once in an
+identical empty folder with no skill anywhere. Mark both the same way. Read
+the gap. Every serious benchmark of this kind is this loop wearing a longer
+paper.
 
-  Change one thing only. Same model, same question, same tools, same empty
-  starting folder. The only difference is whether the skill's files are
-  sitting in the folder. Switching the skill off with a flag is not good
-  enough, because the files would still be there for the agent to go and read.
+Three rules keep it honest. All three are easy to break by accident.
 
-  Compare like with like. Each case is run twice on each side, and the two
-  sides of one attempt are treated as a pair. Comparing paired results is much
-  less jumpy than comparing two separate averages, and 09_statistics.py relies
-  on that pairing.
+  Change one thing. Same model, same request, same tools, same empty starting
+  folder. The only difference is whether the skill's files are present.
+  Switching the skill off with a flag does not count. The files are still
+  there, and the agent can read a file.
 
-  Report the difference, never the headline number on its own. "The skill
-  scores 100 percent" tells you nothing if the plain agent already scored 95.
-  Published figures for the average software engineering skill sit at a few
-  percentage points, and plenty land at zero.
+  Compare like with like. Each case runs twice on each side. The two sides of
+  one attempt stay together as a pair. Paired results are far steadier than
+  two separate averages. 09_statistics.py leans on that pairing hard. Break
+  it here and you quietly invalidate that chapter too.
 
-Marking is done by the plain code checks in commit_message_checks.py, not by
-another AI, so the money here goes on the agent runs and none of it goes on
-marking. Read 09_statistics.py straight after this one. It takes these results
-and tells you whether the difference is real or luck.
+  Report the gap, never the headline on its own. "The skill scores 100
+  percent" means nothing if the plain agent was already at 95. Published
+  figures for the average software engineering skill sit at a few percentage
+  points. A good number land on zero. Be ready for that. A skill that changes
+  nothing is a real result. Finding out costs less than maintaining it for a
+  year.
+
+Marking is done by the free code checks in commit_message_checks.py. Every
+penny here goes on agent runs and none on marking.
+
+This is also the source everything downstream reads from. The answers it
+saves get marked again by a model in 07 and 07b, walked through step by step
+in 08, tested in 09, compared against last month in 10 and priced in 11. You
+pay for these runs once. Five chapters live off them.
+
+07_llm_judge.py is next. It goes after the rules code cannot check. 09 asks
+whether this gap was real or whether you got lucky with eight runs. It will
+not be gentle.
 
 Run:  python 06_ab_comparison.py
 Saves results/06_ab_runs.jsonl, which scripts 07, 09, 10 and 11 all read.
@@ -58,7 +72,7 @@ from skill_eval_common import (
     table,
 )
 
-REPS = 2      # attempts per case on each side. 09_statistics.py explains why one is not enough
+REPS = 2      # attempts per case on each side. 09_statistics.py explains, at length, why one is not enough
 
 
 class ABRun(BaseModel):
@@ -72,7 +86,7 @@ class ABRun(BaseModel):
     failed_checks: list[str] = Field(description="Names of the checks that failed. Empty when everything passed.")
     checks: dict[str, bool] = Field(description="Every check that ran and whether it passed.")
     skill_invoked: bool = Field(description="Did the agent open the skill? Always false on the without-skill side.")
-    model: str = Field(description="Which model served this run, so whoever reads the file later knows what "
+    model: str = Field(description="Which model served this run. Whoever reads the file later knows what "
                                    "produced it.")
     final_text: str = Field(description="What the agent wrote. Scripts 07 and 07b mark this text.")
     input_tokens: int = Field(description="Text the model read fresh, charged at full price.")
@@ -91,6 +105,10 @@ class ABRun(BaseModel):
 def graded_run(prompt: str, case: dict, rep: int, with_skill: bool) -> ABRun:
     """Run the agent once on one side of the comparison, then mark the answer.
 
+    The answer text, the token counts, the cost and the timings all come back
+    on one object, recorded as they happened. Four later scripts read this.
+    None of them pay for a run of their own.
+
     Args:
         prompt: The request to send.
         case: The test case, carrying the id and the right answer to check against.
@@ -100,9 +118,9 @@ def graded_run(prompt: str, case: dict, rep: int, with_skill: bool) -> ABRun:
     Returns:
         An ABRun holding the marks, the answer itself, and what it cost.
     """
-    # >>> THIS SPENDS MONEY. The real Claude Code program runs once per side.
-    #     Passing no skill folder is the without-skill side: same program, same
-    #     question, no skill anywhere in the folder.
+    # >>> THIS SPENDS MONEY. The real Claude Code runs once per side. Handing
+    #     it no skill folder is the whole of the without-skill side. Same
+    #     program, same question, nothing in the folder to find.
     run = run_agent(prompt, skill_dir=SKILL_DIR if with_skill else None)
     results = check_commit_message(run.final_text, case["type"], case["scope"])
     log.info("  marked the %s answer. Checks that failed: %s. Overall: %s",
@@ -122,8 +140,9 @@ def graded_run(prompt: str, case: dict, rep: int, with_skill: bool) -> ABRun:
 def explain_pair(with_skill: ABRun, without_skill: ABRun) -> None:
     """Say in words what one head-to-head comparison showed.
 
-    Printed right after both sides have run, while the two answers are still on
-    screen, so the reader can check the verdict against the text.
+    Printed the moment both sides have run, while the two answers are still
+    on screen. You can check the verdict against the text, rather than take
+    it on faith and find out three chapters later.
 
     Args:
         with_skill: The run that had the skill installed.
@@ -132,44 +151,46 @@ def explain_pair(with_skill: ABRun, without_skill: ABRun) -> None:
     if with_skill.passed and not without_skill.passed:
         explain(f"With the skill, every check passed. Without it, the message broke "
                 f"{len(without_skill.failed_checks)} of them: {', '.join(without_skill.failed_checks)}. None of "
-                "those are things the model could work out on its own. The Refs line at the bottom, the fixed "
-                "list of allowed scopes, the exact way the message has to be wrapped: somebody has to say. That "
-                "gap is what the skill is buying you.", kind="meaning")
+                "those is something the model could work out unaided. The Refs line at the bottom, the fixed "
+                "list of allowed scopes, the exact wrapping. Somebody has to say so. That gap is what you are "
+                "paying the skill for.", kind="meaning")
     elif with_skill.passed and without_skill.passed:
-        explain("Both sides passed. On this case the skill bought nothing at all. If that happens on every "
-                "case, the skill is teaching the model something it already knew, and you could delete it "
-                "without anyone noticing.", kind="meaning")
+        explain("Both sides passed. On this case your skill bought you nothing. If that holds across every "
+                "case, the skill is teaching the model something it already knew. You could delete it "
+                "tomorrow and nobody would notice.", kind="meaning")
     elif not with_skill.passed:
         explain(f"The run with the skill failed on: {', '.join(with_skill.failed_checks)}. Either the skill is "
-                "vague about that rule or the agent read it and ignored it. The answer is saved, so you can go "
-                "and look at which.", kind="meaning")
+                "vague about that rule, or the agent read it and ignored it. Those need different fixes. The "
+                "answer is saved. Read it before you start rewriting.", kind="meaning")
 
 
 def main() -> None:
     configure_logging("06_ab_comparison")
     rows = []
-    log.info("%d cases, %d attempts each, run on both sides. That is %d agent runs, and they cost real money.",
+    log.info("%d cases, %d attempts each, both sides every time. That is %d runs of the real thing. This is "
+             "the expensive chapter.",
              len(COMMIT_CASES), REPS, len(COMMIT_CASES) * REPS * 2)
     show_skill()
     explain(f"This is the test people mean when they ask whether a skill works. Each of the "
-            f"{len(COMMIT_CASES)} cases runs {REPS} times, and every run happens twice: once in a brand new "
-            "empty folder with the skill installed, and once in an identical empty folder without it. Same "
-            "question, same model, same tools. The only difference between the two is whether the skill's "
-            "files are there. Both answers get marked by the same plain code checks, and the number that "
-            "matters is the gap between them.")
+            f"{len(COMMIT_CASES)} cases runs {REPS} times. Every run happens twice. Once in a brand new empty "
+            "folder with the skill installed. Once in an identical empty folder without it. Same question, "
+            "same model, same tools. The only difference is whether the skill's files are there. Both answers "
+            "get marked by the same plain code checks. The number that matters is the gap between them, not "
+            "either one on its own.")
     for case in COMMIT_CASES:
         prompt = commit_prompt(read_fixture(case["diff"]))
         section(f"case {case['id']}: the request")
         show_text(f"what we ask the agent (from fixtures/{case['diff']})", prompt)
         for rep in range(REPS):
             section(f"pair {case['id']} attempt {rep}")
-            explain(f"First side: the skill is installed. For this set of changes the correct answer is "
+            explain(f"First side. The skill is installed. For this set of changes the correct answer is "
                     f"{case['type']}({case['scope']}).")
-            # Both sides run back to back, so if the service is having a slow
-            # afternoon, it slows both of them equally and the comparison holds.
+            # The two sides run back to back on purpose. If the service is
+            # having a slow afternoon, it slows both. The pair still compares.
+            # Run them hours apart and you are measuring the weather.
             with_skill = graded_run(prompt, case, rep, with_skill=True)
-            explain("Second side: the same question, a fresh empty folder, no skill anywhere. The agent has to "
-                    "guess the house style from whatever it already knows.")
+            explain("Second side. The same question, a fresh empty folder, no skill anywhere in it. The agent "
+                    "has to guess your house style from whatever it already knows.")
             without_skill = graded_run(prompt, case, rep, with_skill=False)
             rows += [with_skill, without_skill]
             show_pair("with the skill", with_skill.final_text, "without the skill", without_skill.final_text)
@@ -182,10 +203,11 @@ def main() -> None:
              rate, extra={"file_only": True})
 
     section("results")
-    explain("The number to read is the gap: the pass rate with the skill minus the pass rate without it. Never "
+    explain("The number to read is the gap. The pass rate with the skill, minus the pass rate without it. Never "
             "quote the with-skill number on its own. A hundred percent means nothing if the plain agent was "
-            "already at ninety-five. The second table breaks it down by check, which tells you which rules the "
-            "plain agent already gets right. Those are the parts of the skill you could throw away.",
+            "already at ninety-five. The second table breaks it down check by check. It shows the rules the "
+            "plain agent gets right unaided. Those rules are the parts of your skill nobody needed. Delete "
+            "them and everything left is easier to follow.",
             kind="reading")
     pairs = defaultdict(dict)
     for r in graded:
@@ -196,13 +218,13 @@ def main() -> None:
             ", ".join(p["without_skill"].failed_checks) or "-"]
            for (case, rep), p in sorted(pairs.items()) if len(p) == 2])
 
-    # Break the results down check by check. The ones the plain agent already
-    # passes are the parts of the skill nobody needed.
+    # Broken down check by check. The ones the plain agent already passes are
+    # the parts of your skill that were never earning their keep.
     #
-    # The list of check names comes from the first run. If a later run is
-    # missing a check, that is because an earlier check failed and stopped the
-    # rest from running (a message with no header cannot be checked for header
-    # format), so a missing check counts as a failure.
+    # The list of names comes from the first run. A later run missing a check
+    # means an earlier check failed and stopped the rest from running. A
+    # message with no header cannot be asked about header format. So a
+    # missing check counts as a failure. That is the honest reading.
     rule_rows = []
     for name in graded[0].checks:
         per_arm = {arm: sum(r.checks.get(name, False) for r in runs) / len(runs)
@@ -213,7 +235,9 @@ def main() -> None:
     lift = rate["with_skill"] - rate["without_skill"]
     headline(f"with the skill {rate['with_skill']:.0%} of answers passed, without it {rate['without_skill']:.0%}. "
              f"The skill changed the pass rate by {lift:+.0%}", good=lift > 0)
-    note("Run 09_statistics.py next. It says whether that difference is real or whether we just got lucky.")
+    note("Run 09_statistics.py next. It reads these same results and tells you whether that difference is real "
+         "or whether you got lucky with a handful of runs. It costs nothing. It is the least flattering script "
+         "here.")
 
     save_jsonl(RESULTS_DIR / "06_ab_runs.jsonl", rows)
 

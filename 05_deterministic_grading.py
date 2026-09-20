@@ -1,29 +1,40 @@
 """
-Eval type 5: marking the answer with code instead of with another AI.
+Chapter five: the skill turns up. Is the work any good?
 
-The skill has loaded. Now, does the agent's answer actually follow the rules
-the skill laid down? For any rule you can write as code, write it as code. A
-pattern for the header, a length limit, a line that has to be at the bottom:
-all of those are ordinary programming. Save the AI marker for the things code
-genuinely cannot see, like whether the explanation makes sense.
+04 proved the agent reaches for your skill. That closes one question and
+opens a better one. A skill that loads reliably and then gets ignored is a
+more embarrassing result than one that never loads at all.
 
-Code marking is cheap, gives the same answer every time, and tells you exactly
-which rule broke rather than handing you a vague score.
+So now you mark the answer. The rule is simple, and people break it all the
+time. Anything you can check with code, check with code. A pattern for the
+header. A length limit. A line that has to sit at the bottom. All of that is
+ordinary programming. Save the AI marker for the things code cannot see,
+like whether an explanation makes sense. There are fewer of those than you
+assumed.
 
-The checks themselves live in commit_message_checks.py, and that is the file
-to read first. This one is about the routine around them:
+Code marking is free. It says the same thing every time. It names the rule
+that broke instead of handing you a number and a shrug.
 
-  Prove the marker works before you trust a word it says. Feed it a message
-  written by hand to be perfect, and it must pass. Feed it one written to be
-  wrong, and it must fail. Skip this and the numbers further down might be
-  measuring the marker rather than the skill, and you would have no way of
-  telling which.
+The checks live in commit_message_checks.py. Read that file first. This one
+is about the routine built around them. The first step is the one worth
+stealing.
 
-  Run the agent on each case with the skill installed.
+  Prove the marker works before you believe a word it says. Feed it a message
+  written by hand to be perfect. It must pass. Feed it one written to be
+  wrong. It must fail. Skip that and every number below might be measuring
+  your marker rather than your skill, and nothing in the output would tell
+  you which. You will see this move again in 07. It matters more there,
+  because that marker is a model and has opinions.
 
-  Report how each rule did separately, not one blended number. There is a
-  world of difference between losing on "the subject line is too long" and
-  losing on "the Refs line is missing", and a single score hides both.
+  Then run the agent on each case with the skill installed.
+
+  Then report each rule separately rather than blending them. "The subject
+  line is too long" and "the Refs line is missing" are different problems
+  with different fixes. One averaged score hides both equally well.
+
+What this cannot tell you is whether the skill deserves any credit. Perhaps
+a plain agent with no skill writes commit messages just as good. That is
+06_ab_comparison.py. It is the most expensive thing here.
 
 Run:  python 05_deterministic_grading.py
 Saves results/05_deterministic_runs.jsonl.
@@ -53,13 +64,12 @@ from skill_eval_common import (
     table,
 )
 
-# One attempt per case, on purpose. This script is about proving the marker
-# works. Repetition, and the cost that comes with it, belongs in 06 and 09.
+# One attempt per case, on purpose. This chapter is about proving the marker
+# works. Repetition, and the bill that comes with it, belongs to 06 and 09.
 REPS = 1
 
-# A message written by hand to be perfect. Every rule must accept it. If the
-# marker rejects this, the marker is broken and nothing else here means
-# anything.
+# Written by hand to be perfect. Every rule has to accept it. If the marker
+# turns this down, the marker is broken. Every number after it is noise.
 ORACLE_REPLY = """```text
 docs(cli): document supported environment variables
 
@@ -70,10 +80,11 @@ without reading the source.
 Refs: ACME-0000
 ```"""
 
-# A message that looks plausible at a glance and breaks several rules at once.
-# No code block, a capital letter and a full stop in the subject, a scope
-# nobody allows, no body, no Refs line. The marker must reject it. A marker
-# that waves this through is too soft to catch anything.
+# This one looks fine for about two seconds and breaks five rules. No code
+# block. A capital letter and a full stop in the subject. A scope nobody
+# allows. No body. No Refs line. The marker has to reject it. A marker that
+# waves this through will wave anything through, and report excellent
+# results for ever.
 NULL_REPLY = "Docs(readme): Documented the environment variables."
 
 
@@ -87,7 +98,7 @@ class GradedRun(BaseModel):
     passed: bool = Field(description="True only when every rule passed.")
     failed_checks: list[str] = Field(description="Names of the rules that failed. Empty when everything passed.")
     checks: dict[str, bool] = Field(description="Every rule that ran and whether it passed.")
-    final_text: str = Field(description="What the agent wrote, kept so you can mark it again later against "
+    final_text: str = Field(description="What the agent wrote. Kept so you can mark it again later against "
                                         "different rules without paying for another run.")
     error: str | None = Field(description="Set when the run broke for reasons unrelated to the skill. Those "
                                           "runs are not marked.")
@@ -95,30 +106,34 @@ class GradedRun(BaseModel):
 
 
 def sanity_check_grader() -> None:
-    """Prove the marker works before trusting anything it says.
+    """Prove the marker works before trusting a word it says.
 
-    Two messages go in: one written by hand to be perfect, one written to be
-    wrong. The first must pass and the second must fail. Anything else and the
-    marker itself is the problem.
+    Two messages go in. One written by hand to be perfect, one written to be
+    wrong. The first has to pass. The second has to fail. Anything else means
+    the marker is the thing that needs fixing. It takes no time and no money.
+    It is the step that stops you shipping a confident number that measured
+    nothing.
 
     Raises:
-        SystemExit: The marker rejected the good message or accepted the bad
-            one. Either way there is no point running the agent yet.
+        SystemExit: The marker turned down the good message, or let the bad
+            one through. Either way there is no point paying for agent runs
+            you cannot mark.
     """
     section("checking the marker itself")
-    log.info("before marking anything real, feeding the marker one message known to be right and one known "
-             "to be wrong")
+    log.info("nothing real gets marked yet. First the marker meets one message known to be right and one known "
+             "to be wrong. It has to tell them apart")
     oracle = check_commit_message(ORACLE_REPLY, expected_type="docs", expected_scope="cli")
     null = check_commit_message(NULL_REPLY)
-    log.info("  the good message scored: %s. The bad message scored: %s",
+    log.info("  what it made of the good one: %s. And of the bad one: %s",
              {r.name: r.passed for r in oracle}, {r.name: r.passed for r in null})
     if not all_passed(oracle):
-        sys.exit(f"The marker rejected a message we know is correct, failing on {failed_names(oracle)}. "
-                 "The marker is wrong, not the skill. Fix it before going any further.")
+        sys.exit(f"The marker turned down a message we know is correct. It failed on {failed_names(oracle)}. "
+                 "The marker is wrong here, not the skill. Fix it before you spend anything.")
     if all_passed(null):
-        sys.exit("The marker accepted a message we know is wrong. It is too soft to catch anything. Fix it "
-                 "before going any further.")
-    note(f"The marker passed the good message and caught the bad one on {failed_names(null)}. We can trust it.")
+        sys.exit("The marker accepted a message we know is wrong. It is too soft to catch anything, and would "
+                 "have reported a perfect score. Fix it before you spend anything.")
+    note(f"The marker passed the good message and caught the bad one on {failed_names(null)}. It can be "
+         "trusted with the real thing.")
 
 
 def main() -> None:
@@ -132,13 +147,13 @@ def main() -> None:
         for rep in range(REPS):
             section(f"case {case['id']} attempt {rep}  "
                     f"(the right answer is {case['type']}({case['scope']}))")
-            # >>> THIS SPENDS MONEY. The real Claude Code program runs the case
-            #     with the skill installed. Marking happens afterwards, on
-            #     whatever it wrote.
+            # >>> THIS SPENDS MONEY. The real Claude Code runs the case with
+            #     the skill installed. The marking happens afterwards, for
+            #     free, on whatever it wrote. That is why the text gets saved.
             run = run_agent(commit_prompt(read_fixture(case["diff"])), skill_dir=SKILL_DIR)
             results = check_commit_message(run.final_text, case["type"], case["scope"])
             show_text("the agent's reply", run.final_text)
-            log.info("  marked: %s", {r.name: r.passed for r in results})
+            log.info("  the marker's verdict, rule by rule: %s", {r.name: r.passed for r in results})
             rows.append(GradedRun(case=case["id"], rep=rep, model=run.model, skill_invoked=run.skill_invoked,
                                   passed=all_passed(results), failed_checks=failed_names(results),
                                   checks={r.name: r.passed for r in results}, final_text=run.final_text,
@@ -146,17 +161,17 @@ def main() -> None:
 
     section("results")
     graded = [r for r in rows if not r.error]
-    table("how each run did", ["case", "attempt", "skill loaded", "what it got wrong", "verdict"],
+    table("what happened on each run", ["case", "attempt", "skill loaded", "what it got wrong", "verdict"],
           [[r.case, r.rep, "yes" if r.skill_invoked else "no", ", ".join(r.failed_checks) or "-", r.passed]
            for r in graded])
     per_check = Counter()
     for row in graded:
         for name, passed in row.checks.items():
             per_check[name] += passed
-    table("how each rule did", ["rule", "passed", "out of"],
+    table("rule by rule: which ones your skill keeps losing", ["rule", "passed", "out of"],
           [[name, passes, len(graded)] for name, passes in sorted(per_check.items())])
     all_passed_runs = sum(r.passed for r in graded)
-    headline(f"{all_passed_runs} of {len(graded)} runs got every single rule right",
+    headline(f"{all_passed_runs} of {len(graded)} runs got every rule right",
              good=all_passed_runs == len(graded))
 
     save_jsonl(RESULTS_DIR / "05_deterministic_runs.jsonl", rows)
