@@ -3,6 +3,8 @@ logs/
 __pycache__/
 *.pyc
 deck/qa/
+.DS_Store
+.ruff_cache/
 
 # secrets
 .env
