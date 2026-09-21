@@ -9,3 +9,8 @@ select = ["E", "F", "I", "SIM", "RUF", "ASYNC", "ISC"]
 # The deck's words live in long strings on purpose; wrapping them would only hurt.
 "deck/content.py" = ["E501"]
 "deck/build.py" = ["E501"]
+# Each chapter of the notebook imports what it needs, so a reader can start
+# anywhere. Ruff sees one module and calls the repeats redefinitions.
+# F403/F405: `from eval_kit import *` and `from commit_message_checks import *`
+# bring all names into scope; the chapters reference them without re-importing.
+"*.ipynb" = ["F811", "F403", "F405"]

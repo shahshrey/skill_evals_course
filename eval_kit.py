@@ -1,64 +1,17 @@
+"""Shared infrastructure for all eleven skill-eval chapters.
+
+This module defines the infrastructure that every chapter uses:
+configuration constants, display helpers, the agent runner, and the
+marker. Import it with ``from eval_kit import *`` at the top of a
+session and then override the config via ``eval_kit.SKILL_DIR = ...``
+before running any chapter.
 """
-Before we start: the kit you will be carrying.
-
-You have written a skill. A skill is a folder with a file called SKILL.md in
-it. That file tells an AI assistant how to do one job, in plain markdown, like
-a note to a new colleague. You have read it back a few times. It seems good.
-
-That feeling is the problem. You do not know whether it works. Nobody does,
-because you cannot test a skill the way you test a function. Call a function
-twice with the same input and you get the same answer twice. Ask a model the
-same question twice and you get two different answers. Both look plausible.
-One may be wrong. There is nothing to assert on.
-
-So you do the other thing. Run it many times. Measure what comes out. Compare
-that against what comes out when the skill is not there. That comparison is
-the whole trick. The eleven numbered scripts in this folder are eleven ways of
-making it, in roughly the order you would want to run them. Free questions
-first. Expensive ones once you have earned the right to ask.
-
-Read them in order and they tell one story. This file is the bit before the
-story starts, where somebody hands you the equipment.
-
-  load_skill()        opens a SKILL.md and splits it into its parts.
-  run_agent()         runs Claude Code once, with or without the skill, and
-                      hands back everything worth measuring.
-  save_jsonl()        writes results to disk. Next month you can mark them
-                      again without paying for the runs a second time.
-  configure_logging() colour on screen, plain text in logs/<script>.log. Set
-                      SKILL_EVAL_LOG=debug for every prompt and reply in full.
-  section(), table(), headline(), explain()
-                      the furniture. Dividers between steps, result tables, a
-                      boxed verdict at the end, and yellow boxes that say what
-                      is going on while it goes on.
-
-One decision needs defending first. These scripts drive the real Claude Code
-program instead of calling an API. That is slower. Here is why it is worth it.
-
-The model does not choose the skill. The software around it does. Claude Code
-reads every installed skill's description, decides which one fits, and only
-then shows the model the instructions inside. Paste your SKILL.md straight
-into an API prompt and you have skipped that decision. You will never find
-out whether your description is good enough to get picked. And a skill that
-never gets picked is not a skill. It is a file.
-
-So every run here installs the skill into a throwaway folder, the way a real
-user would, and lets Claude Code make up its own mind. It is the only way the
-answer means anything.
-
-Start with 01_structural_lint.py. It costs nothing and it is rude about your
-formatting.
-"""
-
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -72,7 +25,7 @@ from claude_agent_sdk.types import (
     TextBlock,
     ToolUseBlock,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from rich import box
 from rich.console import Console
 from rich.highlighter import RegexHighlighter
@@ -83,43 +36,27 @@ from rich.table import Table
 from rich.theme import Theme
 
 # ---------------------------------------------------------------------------
-# The things that must not move
-#
-# An experiment only works if one thing changes and everything else sits
-# still. So everything that has to sit still is pinned here, at the top, where
-# you can see it. Nothing below this block changes it halfway through a run.
+# Paths — all relative to this file, which sits in the project root.
 # ---------------------------------------------------------------------------
 
 HERE = Path(__file__).parent
-SKILL_DIR = HERE / "skills" / "commit-message"   # the skill on trial
-FIXTURES_DIR = HERE / "fixtures"                 # sample inputs, kept on disk
-RESULTS_DIR = HERE / "results"                   # what each script found out
-LOGS_DIR = HERE / "logs"                         # the blow-by-blow of every run
+SKILL_DIR = HERE / "skills" / "commit-message"
+FIXTURES_DIR = HERE / "fixtures"
+RESULTS_DIR = HERE / "results"
+LOGS_DIR = HERE / "logs"
 
-# The model that does the work. Pinning an exact version looks fussy. Then a
-# new model ships, your numbers move, and you spend an afternoon hunting for a
-# bug in your skill. There was no bug.
+# ---------------------------------------------------------------------------
+# Configuration — override in the notebook: eval_kit.AGENT_MODEL = "..."
+# ---------------------------------------------------------------------------
+
 AGENT_MODEL = "claude-opus-5"
-
-# The model that marks the homework, where marking needs judgement. It is a
-# different model from the one being tested, on purpose. Ask a model to grade
-# its own writing and it finds a great deal to admire.
 JUDGE_MODEL = "claude-sonnet-5"
-
-# What the agent may touch while it works. "Skill" has to be on this list,
-# because opening a skill is itself a tool call. Leave it off and the agent
-# never reaches the skill. You then spend an hour blaming your description.
-DEFAULT_TOOLS = ["Skill", "Read", "Bash"]
-
+DEFAULT_TOOLS: list[str] = ["Skill", "Read", "Bash"]
 
 # ---------------------------------------------------------------------------
-# Telling you what is happening
+# Logging and display
 # ---------------------------------------------------------------------------
 
-# Everything talks through this one logger. Two audiences, kept apart. The
-# tables at the end are the findings, the thing you would put in front of
-# someone else. The log lines are the story of how those findings came about.
-# You read those when the findings surprise you.
 log = logging.getLogger("skill_eval")
 
 
@@ -167,17 +104,17 @@ class _ConsoleFilter(logging.Filter):
         return not getattr(record, "file_only", False)
 
 
-def configure_logging(script_name: str) -> None:
+def configure_logging(chapter: str) -> None:
     """Turn on the commentary: colour on screen, plain text in a file.
 
-    Every script calls this first. At the normal setting you watch every agent
+    Every chapter calls this first. At the normal setting you watch every agent
     run, every tool it reached for and every marking decision go past. Set
     SKILL_EVAL_LOG=debug and you also get the full prompts, the full replies
     and every argument handed to every tool. It is a lot of text. It is also
     the fastest way to work out what happened when a run goes sideways.
 
     Args:
-        script_name: The calling script's name without the .py. It names the
+        chapter: The chapter's name, such as 01_structural_lint. It names the
             log file, so 09_statistics ends up in logs/09_statistics.log.
 
     Example:
@@ -196,7 +133,7 @@ def configure_logging(script_name: str) -> None:
     console.setFormatter(logging.Formatter("%(message)s"))
     console.addFilter(_ConsoleFilter())
 
-    file = logging.FileHandler(LOGS_DIR / f"{script_name}.log", mode="w")
+    file = logging.FileHandler(LOGS_DIR / f"{chapter}.log", mode="w")
     file.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(message)s", datefmt="%H:%M:%S"))
 
     root = logging.getLogger()
@@ -209,13 +146,14 @@ def configure_logging(script_name: str) -> None:
     # unless you asked for debug output.
     for noisy in ("claude_agent_sdk", "typesafe_sdk", "httpx", "httpx2"):
         logging.getLogger(noisy).setLevel(logging.DEBUG if level == logging.DEBUG else logging.WARNING)
+    # asyncio warns about an "unknown child process" now and then when a
+    # finished claude process gets tidied away. The run itself is fine, and
+    # in a stored output the warning reads like a failure. So it stays quiet.
+    logging.getLogger("asyncio").setLevel(logging.ERROR)
     log.info("starting %s. You will see %s-level detail here, and everything in logs/%s.log",
-             script_name, logging.getLevelName(level), script_name)
+             chapter, logging.getLevelName(level), chapter)
 
 
-# Findings go to stdout through this console. The running commentary goes to
-# stderr. Kept apart, you can pipe the findings into a file and still watch
-# the story scroll past on screen.
 out = Console()
 
 
@@ -283,7 +221,7 @@ def _cell(value) -> str:
 def headline(text: str, good: bool | None = None) -> None:
     """Print the one line you should walk away with, in a box.
 
-    If a reader takes nothing else from a script, they take this. Write it as
+    If a reader takes nothing else from a chapter, they take this. Write it as
     a sentence a person could say out loud, not as a score.
 
     Args:
@@ -308,38 +246,6 @@ def note(text: str) -> None:
             shoulder. Caveats and pointers live here. Findings do not.
     """
     out.print(f"[dim]{escape(text)}[/]")
-
-
-def show_skill(skill_dir: Path = SKILL_DIR) -> None:
-    """Introduce the defendant.
-
-    Every script opens with this, so anyone watching knows what is on trial
-    before the evidence arrives. The description in that box is not a summary
-    written for you. It is the exact sentence Claude Code reads when deciding
-    whether to use this skill. That is why it gets a box of its own.
-
-    Args:
-        skill_dir: The folder holding SKILL.md. Defaults to the commit-message
-            skill that comes with these scripts.
-
-    Example:
-        show_skill()
-    """
-    shown = skill_dir.relative_to(HERE) if skill_dir.is_relative_to(HERE) else skill_dir
-    try:
-        skill = load_skill(skill_dir)
-    except (OSError, ValueError, KeyError, yaml.YAMLError):
-        # Scripts 01 and 02 get pointed at skills that are broken on purpose.
-        # Failing to read one here is usually the whole point, not a disaster.
-        # Say so calmly and let the script explain below.
-        out.print(Panel(f"[dim]{escape(str(shown))}/SKILL.md[/]\n\ncould not be read. The findings below explain why",
-                        title="skill under test", border_style="cyan", title_align="left"))
-        log.info("skill under test: %s (the file could not be read)", shown, extra={"file_only": True})
-        return
-    body = (f"[bold]{escape(skill.name)}[/]   [dim]{escape(str(shown))}/SKILL.md[/]\n\n"
-            f"{escape(skill.description)}")
-    out.print(Panel(body, title="skill under test", border_style="cyan", title_align="left"))
-    log.info("skill under test: %s (%s): %s", skill.name, shown, skill.description, extra={"file_only": True})
 
 
 def show_text(title: str, text: str, colour: str = "grey50") -> None:
@@ -391,7 +297,7 @@ EXPLAIN_TITLES = {
 def explain(text: str, kind: str = "next") -> None:
     """Narrate what is going on, in a yellow box, while it goes on.
 
-    These scripts are meant to be watched, not just run. So the narration
+    These chapters are meant to be watched, not just run. So the narration
     lives in the output, not in a comment nobody scrolls to. Three kinds:
 
       next     what is about to happen, and why it is worth doing
@@ -417,13 +323,13 @@ def explain(text: str, kind: str = "next") -> None:
 
 
 # ---------------------------------------------------------------------------
-# Opening the skill
+# Skill loader
 # ---------------------------------------------------------------------------
 
 class Skill(BaseModel):
     """A SKILL.md file, taken apart into its pieces.
 
-    Every record in these scripts is a Pydantic model, for two reasons. The
+    Every record in this notebook is a Pydantic model, for two reasons. The
     field descriptions are the documentation, and they sit next to the data
     instead of in a README that stopped being true in March. And a record that
     does not match its model fails the moment it is built, not three steps
@@ -492,8 +398,40 @@ def read_fixture(relative_path: str) -> str:
     return (FIXTURES_DIR / relative_path).read_text()
 
 
+def show_skill(skill_dir: Path = SKILL_DIR) -> None:
+    """Introduce the defendant.
+
+    Every chapter opens with this, so anyone watching knows what is on trial
+    before the evidence arrives. The description in that box is not a summary
+    written for you. It is the exact sentence Claude Code reads when deciding
+    whether to use this skill. That is why it gets a box of its own.
+
+    Args:
+        skill_dir: The folder holding SKILL.md. Defaults to the commit-message
+            skill that comes with this notebook.
+
+    Example:
+        show_skill()
+    """
+    shown = skill_dir.relative_to(HERE) if skill_dir.is_relative_to(HERE) else skill_dir
+    try:
+        skill = load_skill(skill_dir)
+    except (OSError, ValueError, KeyError, yaml.YAMLError):
+        # Chapters 01 and 02 get pointed at skills that are broken on purpose.
+        # Failing to read one here is usually the whole point, not a disaster.
+        # Say so calmly and let the chapter explain below.
+        out.print(Panel(f"[dim]{escape(str(shown))}/SKILL.md[/]\n\ncould not be read. The findings below explain why",
+                        title="skill under test", border_style="cyan", title_align="left"))
+        log.info("skill under test: %s (the file could not be read)", shown, extra={"file_only": True})
+        return
+    body = (f"[bold]{escape(skill.name)}[/]   [dim]{escape(str(shown))}/SKILL.md[/]\n\n"
+            f"{escape(skill.description)}")
+    out.print(Panel(body, title="skill under test", border_style="cyan", title_align="left"))
+    log.info("skill under test: %s (%s): %s", skill.name, shown, skill.description, extra={"file_only": True})
+
+
 # ---------------------------------------------------------------------------
-# Actually running the thing
+# Agent runner
 # ---------------------------------------------------------------------------
 
 class ToolCall(BaseModel):
@@ -542,12 +480,46 @@ class AgentRun(BaseModel):
                                   "the network dying. Marking skips these.")
 
 
+def reads_skill_file(call: ToolCall) -> bool:
+    """Is this action the agent opening SKILL.md by hand, with the Read tool?
+
+    Args:
+        call: One thing the agent did.
+
+    Returns:
+        True when the tool was Read and the path ends in SKILL.md.
+    """
+    return call.name == "Read" and "SKILL.md" in str(call.input.get("file_path", ""))
+
+
+def skill_was_loaded(run: AgentRun) -> bool:
+    """Decide whether the skill's instructions reached the agent at all.
+
+    There is more than one door. Loading the skill properly, through the
+    Skill tool, is the front one. But an agent that notices SKILL.md in the
+    folder and reads the file has the same words in front of it. Counting
+    that as a miss would score the mechanism rather than the outcome. Both
+    count, and every chapter uses this one definition, so 10 never compares
+    a number built one way against a number built the other.
+
+    Args:
+        run: A finished AgentRun.
+
+    Returns:
+        True if the skill's instructions reached the agent, by either route.
+
+    Example:
+        if skill_was_loaded(run): ...
+    """
+    return run.skill_invoked or any(reads_skill_file(c) for c in run.tool_calls)
+
+
 def run_agent(
     prompt: str,
     skill_dir: Path | None = SKILL_DIR,
     workspace_files: dict[str, str] | None = None,
-    model: str = AGENT_MODEL,
-    allowed_tools: list[str] = DEFAULT_TOOLS,
+    model: str | None = None,
+    allowed_tools: list[str] | None = None,
     max_turns: int = 8,
     git_init: bool = False,
 ) -> AgentRun:
@@ -564,8 +536,9 @@ def run_agent(
         workspace_files: Files to put in the folder first, as
             {filename: contents}. You need this when the request mentions a
             file, such as {"changes.diff": "..."} for "summarise changes.diff".
-        model: Which model to use. Defaults to the pinned AGENT_MODEL.
-        allowed_tools: What the agent is allowed to touch.
+        model: Which model to use. Defaults to AGENT_MODEL.
+        allowed_tools: What the agent is allowed to touch. Defaults to
+            DEFAULT_TOOLS.
         max_turns: Pull the plug after this many turns, so a confused agent
             cannot spend your money all afternoon.
         git_init: Make the folder a real git repository first. Some cases are
@@ -579,6 +552,10 @@ def run_agent(
         run = run_agent("Write a commit message for this diff:\\n\\n...")
         print(run.skill_invoked, run.cost_usd)
     """
+    if model is None:
+        model = AGENT_MODEL
+    if allowed_tools is None:
+        allowed_tools = list(DEFAULT_TOOLS)
     skill_name = load_skill(skill_dir).name if skill_dir else None
     arm = f"WITH skill {skill_name}" if skill_dir else "WITHOUT skill"
     log.info("running the agent %s, on %s. The request starts: %.70r",
@@ -647,36 +624,42 @@ async def _run_agent_async(prompt: str, workspace: Path, skill_name: str | None,
     #     separate process, points it at the folder we just built, hands it the
     #     request and streams back every message. Every number in every table
     #     in this folder comes out of the loop below.
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            run.model = message.model
-            for block in message.content:
-                if isinstance(block, ToolUseBlock):
-                    run.tool_calls.append(ToolCall(name=block.name, input=block.input))
-                    log.info("  tool call %d: %s %s", len(run.tool_calls), block.name,
-                             _summarise_input(block.input))
-                    log.debug("  what it was given: %s", block.input)
-                    if block.name == "Skill" and block.input.get("skill") == skill_name:
-                        run.skill_invoked = True
-                        log.info("  the agent loaded the skill")
-                elif isinstance(block, TextBlock):
-                    # An agent says several things on its way to an answer.
-                    # "Let me read that file first", some thinking out loud,
-                    # then the answer. The last thing it says is what counts.
-                    run.final_text = block.text
-        elif isinstance(message, ResultMessage):
-            run.num_turns = message.num_turns
-            run.cost_usd = message.total_cost_usd or 0.0
-            usage = message.usage or {}
-            # All four counts, straight from the API, not guessed. Record only
-            # input_tokens and you miss the reused instructions. Those are
-            # most of what a run reads.
-            run.input_tokens = usage.get("input_tokens", 0)
-            run.cache_read_tokens = usage.get("cache_read_input_tokens", 0)
-            run.cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
-            run.output_tokens = usage.get("output_tokens", 0)
-            if message.is_error:
-                run.error = f"{message.subtype}: {message.result or message.errors}"
+    try:
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                run.model = message.model
+                for block in message.content:
+                    if isinstance(block, ToolUseBlock):
+                        run.tool_calls.append(ToolCall(name=block.name, input=block.input))
+                        log.info("  tool call %d: %s %s", len(run.tool_calls), block.name,
+                                 _summarise_input(block.input))
+                        log.debug("  what it was given: %s", block.input)
+                        if block.name == "Skill" and block.input.get("skill") == skill_name:
+                            run.skill_invoked = True
+                            log.info("  the agent loaded the skill")
+                    elif isinstance(block, TextBlock):
+                        # An agent says several things on its way to an answer.
+                        # "Let me read that file first", some thinking out loud,
+                        # then the answer. The last thing it says is what counts.
+                        run.final_text = block.text
+            elif isinstance(message, ResultMessage):
+                run.num_turns = message.num_turns
+                run.cost_usd = message.total_cost_usd or 0.0
+                usage = message.usage or {}
+                # All four counts, straight from the API, not guessed. Record only
+                # input_tokens and you miss the reused instructions. Those are
+                # most of what a run reads.
+                run.input_tokens = usage.get("input_tokens", 0)
+                run.cache_read_tokens = usage.get("cache_read_input_tokens", 0)
+                run.cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
+                run.output_tokens = usage.get("output_tokens", 0)
+                if message.is_error:
+                    run.error = f"{message.subtype}: {message.result or message.errors}"
+    except ClaudeSDKError as exc:
+        # The network died, or the claude program did. That is news about your
+        # setup, not your skill. Write it on the run and hand the run back, so
+        # the runs before it stay paid for and the ones after it still happen.
+        run.error = f"{type(exc).__name__}: {exc}"
 
     run.duration_ms = int((time.monotonic() - started) * 1000)
     if run.error:
@@ -703,7 +686,7 @@ def _summarise_input(tool_input: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Keeping what you paid for
+# Saving and loading results
 # ---------------------------------------------------------------------------
 
 def save_jsonl(path: Path, rows: list[BaseModel | dict]) -> None:
@@ -743,43 +726,47 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def results_from(producer: str, filename: str) -> Path:
-    """Fetch a results file, running the script that makes it if it is missing.
+    """Fetch a results file, or say which chapter makes it if it is missing.
 
-    Every script here works on its own, in any order. The cheap ones read rows
-    an expensive one saved earlier. If the file is missing, they run that
-    script instead of lecturing you about order. After that the saved rows get
-    reused.
+    The cheap chapters read rows an expensive one saved earlier. If the file is
+    missing, this stops and names the chapter to run, instead of quietly
+    spending money on your behalf.
 
-    That reuse is the habit this folder is trying to teach. Agent runs cost
+    That reuse is the habit this notebook is trying to teach. Agent runs cost
     money and minutes. Pay once, then mark them as often as you like, against
     rules you have not thought of yet.
 
     Args:
-        producer: The script that makes the file, such as
-            "06_ab_comparison.py".
+        producer: The chapter that makes the file, such as "chapter six".
         filename: What it is called inside results/.
 
     Returns:
         The path, now definitely pointing at a file that exists.
 
+    Raises:
+        FileNotFoundError: The file is not there yet. Run the producer first.
+
     Example:
-        path = results_from("06_ab_comparison.py", "06_ab_runs.jsonl")
+        path = results_from("chapter six", "06_ab_runs.jsonl")
     """
     path = RESULTS_DIR / filename
     if not path.exists():
-        log.warning("there is no %s yet, so %s has to run first. That one spends real money.",
-                    filename, producer)
-        subprocess.run([sys.executable, str(HERE / producer)], check=True)
+        raise FileNotFoundError(f"there is no results/{filename} yet, so {producer} has to run first. That one "
+                                "spends real money.")
     return path
 
+
+# ---------------------------------------------------------------------------
+# Asking the marker
+# ---------------------------------------------------------------------------
 
 Reply = TypeVar("Reply", bound=BaseModel)
 
 
-def ask_model(prompt: str, response_model: type[Reply], model: str = JUDGE_MODEL) -> Reply | None:
+def ask_model(prompt: str, response_model: type[Reply], model: str | None = None) -> Reply | None:
     """Put one question to a model and make it answer in a shape you chose.
 
-    This is what the scripts use when one model marks another model's
+    This is what the chapters use when one model marks another model's
     homework. The marker gets no tools, no conversation and no room to
     improvise. Just the question and the shape its answer has to fit.
 
@@ -808,6 +795,8 @@ def ask_model(prompt: str, response_model: type[Reply], model: str = JUDGE_MODEL
         if reply is None:
             ...  # count it as a fail
     """
+    if model is None:
+        model = JUDGE_MODEL
     log.info("asking the marker, %s. The question is %d characters long. The answer has to fit %s",
              model, len(prompt), response_model.__name__)
     log.debug("the full question put to the marker:\n%s", prompt)
@@ -815,7 +804,14 @@ def ask_model(prompt: str, response_model: type[Reply], model: str = JUDGE_MODEL
     if not result or result.structured_output is None:
         log.warning("  nothing usable came back from the marker, so this counts as a fail")
         return None
-    reply = response_model.model_validate(result.structured_output)
+    try:
+        reply = response_model.model_validate(result.structured_output)
+    except ValidationError as exc:
+        # The answer came back, but not in the shape that was asked for. Same
+        # rule as above. An unusable answer is a fail, never a crash and never
+        # a pass.
+        log.warning("  the marker answered in the wrong shape, so this counts as a fail: %s", exc)
+        return None
     log.info("  the marker says: %.100s", reply.model_dump_json())
     return reply
 
@@ -848,5 +844,5 @@ async def _ask_model_async(prompt: str, model: str, output_schema: dict) -> Resu
         # A marker that crashes is telling you about your setup, not your
         # skill. Say so and let the caller count it as a fail, rather than
         # taking the whole run down.
-        print(f"  the call to the marker model fell over: {exc}")
+        log.warning("  the call to the marker model fell over: %s", exc)
     return result

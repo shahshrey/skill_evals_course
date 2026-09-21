@@ -4,3 +4,10 @@ typesafe-sdk>=0.7
 python-dotenv>=1
 rich>=13
 pydantic>=2
+
+# The notebook. ipykernel runs the cells, nest_asyncio lets the agent
+# runs use asyncio.run inside the kernel, nbclient gives `jupyter execute`
+# for running the whole thing from a terminal.
+ipykernel>=6
+nest_asyncio>=1.6
+nbclient>=0.10

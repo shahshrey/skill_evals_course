@@ -1,132 +1,128 @@
-# Skill evals, one file per eval type
+# Skill evals
 
-Eleven small Python files. Each one shows a different way to evaluate an
-agent skill: a folder with a `SKILL.md` that a harness such as Claude Code
-loads on demand. (The harness is the program around the model: it decides
-which skills the model can see, runs the tools, and keeps the conversation
-going. Skills are a harness feature, which matters for how you test them.)
-All eleven files evaluate the same sample skill, `skills/commit-message`,
-so you can read them in order and watch one skill get tested from every
-angle.
+One notebook, eleven chapters, one skill on trial.
 
-## The files
+A skill is a folder with a `SKILL.md` in it that a harness such as Claude
+Code loads when a request matches its description. (The harness is the
+program around the model. It decides which skills the model can see, runs
+the tools, and keeps the conversation going. Skills are a harness feature,
+and that matters for how you test them.) `skill_evals.ipynb` puts one such
+skill, `skills/commit-message`, through every kind of eval there is, in the
+order you would want to ask the questions. The free ones come first. The
+ones that send you a bill come once you have earned the right to ask.
 
-| File | Question it answers | Needs a model? |
+Every cell that runs something has the output of a real run stored under
+it, so you can read the whole thing on GitHub or in a notebook viewer
+without running a cell. Running it yourself costs a few dollars and about
+ten minutes.
+
+## The chapters
+
+| Chapter | Question it answers | Needs a model? |
 |---|---|---|
-| `01_structural_lint.py` | Is the SKILL.md well-formed enough to load? | no |
-| `02_security_scan.py` | Does the skill try to do something hostile? | no |
-| `03_routing_offline.py` | Does the description contain the words users type, without colliding with neighbours? | no |
-| `03b_routing_semantic.py` | Same question by meaning: a fast typed model (Jev) picks a skill from the catalog, with probabilities that expose collisions | Jev calls only |
-| `04_trigger_eval.py` | Does the real harness load the skill when it should, and only then? | yes |
-| `05_deterministic_grading.py` | Does the output follow the rules we can check with code? | yes |
-| `06_ab_comparison.py` | How much better is the agent with the skill than without? | yes |
-| `07_llm_judge.py` | What about the rules only a reader can check? | judge calls only |
-| `07b_fast_judge.py` | Same questions to a fast typed-judgment model (Jev), with probabilities and a cross-check against 07 | Jev calls only |
-| `08_trajectory_eval.py` | Did the agent follow the procedure and respect the prohibitions? | yes |
-| `09_statistics.py` | Is the lift real or noise? | no |
-| `10_regression_check.py` | Did anything get worse since the last run you trusted? | no |
-| `11_efficiency_eval.py` | What does the improvement cost in tokens, dollars and time? | no |
+| The kit | How do we run the agent with and without the skill, and record what happened? | no |
+| The interlude | What does a correct commit message look like, in code? | no |
+| One | Is the SKILL.md well-formed enough to load? | no |
+| Two | Does the skill try to do something hostile? | no |
+| Three | Does the description contain the words users type, without colliding with neighbours? | no |
+| Three and a half | Same question by meaning: a fast typed model (Jev) picks a skill from the catalog, with probabilities that expose collisions | Jev calls only |
+| Four | Does the real harness load the skill when it should, and only then? | yes |
+| Five | Does the output follow the rules we can check with code? | yes |
+| Six | How much better is the agent with the skill than without? | yes |
+| Seven | What about the rules only a reader can check? | judge calls only |
+| Seven and a half | Same questions to a fast typed-judgment model (Jev), with probabilities and a cross-check against seven | Jev calls only |
+| Eight | Did the agent follow the procedure and respect the prohibitions? | yes |
+| Nine | Is the lift real or noise? | no |
+| Ten | Did anything get worse since the last run you trusted? | no |
+| Eleven | What does the improvement cost in tokens, dollars and time? | no |
 
-The numbering groups the files by cost: three that are free, five that run
-the real agent, three that only analyse saved rows. If you would rather
-follow one thread, read 09 straight after 06, since it exists to interpret
-06's numbers, and read 10 last, since it snapshots what all the others saved.
+The kit (`eval_kit.py`) runs the agent in a throwaway project with or
+without the skill installed and records everything an eval might grade:
+final text, every tool call, tokens, cost, duration. The interlude
+(`commit_message_checks.py`) holds the deterministic checks and the case
+list for the sample skill, so four later chapters grade with one ruler.
+The notebook imports both; its first cells set the four configuration
+values and then the eleven chapters follow.
+Everything specific to commit messages lives in those two places and in
+the fixtures.
 
-Every record in the course is a Pydantic model with a description on
-each field: the skill, an agent run and its tool calls, a check result, a
-lint or scan finding, the reply shapes the judge must return, and the row
-each live script writes to `results/`. The descriptions are the
-documentation for those files, the judge's reply model is the JSON schema
-the API enforces, and a row that does not match its model fails loudly
-instead of silently.
+Every record is a Pydantic model with a description on each field: the
+skill, an agent run and its tool calls, a check result, a lint or scan
+finding, the reply shapes the judge must return, and the row each live
+chapter writes to `results/`. The descriptions are the documentation for
+those files, the judge's reply model is the JSON schema the API enforces,
+and a row that does not match its model fails loudly instead of silently.
 
-Every script that touches the skill opens with a "skill under test" panel:
-its name, its folder, and the description the harness routes on. The live scripts then show the exact prompt each case sends
-and the agent's reply in a box before grading it; 06 shows the two arms'
-replies side by side. The three demo scripts (06 with 09, 07b, and 08)
-also narrate themselves as they run, in yellow boxes titled "what happens
-next", "what this means" and "how to read this", with the meaning written
-from the actual outcome. Set `SKILL_EVAL_EXPLAIN=0`
-to silence them once you know the material.
-
-Every file marks the exact line where something real happens. Search for
-`>>> LIVE CALL` to find where the Claude Code CLI or a model is invoked,
-and `>>> NO LIVE CALL` in the files that only compute over saved rows.
-
-Two support modules:
-
-- `skill_eval_common.py` runs the agent in a throwaway project with or
-  without the skill installed, and records everything an eval might grade:
-  final text, every tool call, tokens, cost, duration. Read this first.
-- `commit_message_checks.py` holds the deterministic checks and the case
-  list for the sample skill. Everything specific to commit messages is here,
-  so swapping in your own skill means editing this file and the fixtures.
-
-## Running
+## Running it
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-# Free. Run each on the sample skill, then on the deliberately broken one,
-# so you see what a failure looks like.
-python 01_structural_lint.py
-python 01_structural_lint.py fixtures/bad_skills/sneaky-helper
-python 02_security_scan.py
-python 02_security_scan.py fixtures/bad_skills/sneaky-helper
-python 03_routing_offline.py
-python 03b_routing_semantic.py        # needs TYPESAFE_API_KEY; about 2 seconds
-
-# Real agent runs from here on.
-python 04_trigger_eval.py
-python 05_deterministic_grading.py
-python 06_ab_comparison.py            # saves results/06_ab_runs.jsonl
-python 07_llm_judge.py                # grades 06's saved rows; judge calls only
-python 07b_fast_judge.py              # same rows through Jev; needs TYPESAFE_API_KEY
-python 08_trajectory_eval.py
-
-# No model calls of their own: these read what 04, 05 and 06 saved, and run
-# those scripts first if the rows are missing.
-python 09_statistics.py
-python 11_efficiency_eval.py
-python 10_regression_check.py --save-baseline   # then re-run 04-06 later and
-python 10_regression_check.py                   # compare against the snapshot
+claude            # log in once; the live chapters drive the real Claude Code
+echo 'TYPESAFE_API_KEY=...' > .env   # chapters three and a half, seven and a half
 ```
 
-The live files drive Claude Code through the official `claude-agent-sdk`,
-which works with a Claude Code login and needs no API key. The two
-exceptions are the "b" variants, `03b_routing_semantic.py` and
-`07b_fast_judge.py`, which call TypeSafe's Jev and read `TYPESAFE_API_KEY`
-from the environment or a `.env` file. Jev returns typed judgments with
-probabilities in about a tenth of a second, so those two run on every edit
-where their full-size counterparts run once. That choice is
-deliberate. Skills are loaded by the harness, not the model, so pasting a
-SKILL.md into a raw API system prompt would never tell you whether the
-description triggers. Here the skill is copied into `.claude/skills/` in a
-fresh temp folder, exactly as a user would install it.
+Then open `skill_evals.ipynb` from this folder in VS Code or JupyterLab
+and run all cells. The shared infrastructure lives in `eval_kit.py` and
+`commit_message_checks.py` next to the notebook. The notebook imports both;
+start it from this folder so the imports find them and the kit's paths
+resolve correctly, or the first cell will stop and say so.
+To run it without opening anything:
 
-Every script logs what it is doing as it goes: which case is running,
+```bash
+jupyter execute skill_evals.ipynb --inplace
+```
+
+The live chapters drive Claude Code through the official
+`claude-agent-sdk`, which works with a Claude Code login and needs no API
+key. The two "half" chapters call TypeSafe's Jev and read
+`TYPESAFE_API_KEY` from the environment or a `.env` file. Jev returns
+typed judgments with probabilities in about a tenth of a second, so those
+two run on every edit where their full-size counterparts run once.
+
+Skills are loaded by the harness, not the model, so pasting a SKILL.md
+into a raw API system prompt would never tell you whether the description
+triggers. Here the skill is copied into `.claude/skills/` in a fresh temp
+folder, exactly as a user would install it.
+
+Chapters four, five, six and eight each start the real agent. Chapter
+seven sends chapter six's saved replies to a judge model. The defaults are
+tiny (four cases, one or two attempts) so a full pass stays cheap. Chapter
+nine will tell you, correctly, that eight pairs cannot resolve a
+twenty-point effect. That is the lesson, not a bug: raise `AB_REPS` in chapter six
+when you need a number you can defend.
+
+Chapters seven, seven and a half, nine, ten and eleven do not start the
+agent. They read rows that an earlier chapter saved to `results/`, and
+stop with a message naming the chapter to run first if those rows are
+missing. `results/` is not committed (it is in `.gitignore`, next to
+`.env`), so the notebook's stored outputs are the only record of a run
+until you make your own. That is the habit the notebook teaches: pay for
+agent runs once, analyse them as often as you like.
+
+## What you will see
+
+Every chapter that touches the skill opens with a "skill under test"
+panel: its name, its folder, and the description the harness routes on.
+The live chapters show the exact prompt each case sends and the agent's
+reply in a box before grading it. Chapter six shows the two arms' replies
+side by side. Chapters six, seven and a half, eight and nine also narrate
+themselves as they run, in yellow boxes titled "what happens next", "what
+this means" and "how to read this", with the meaning written from the
+actual outcome. Set `SKILL_EVAL_EXPLAIN=0` to silence them once you know
+the material.
+
+Every chapter logs what it is doing as it goes: which case is running,
 whether the skill was installed, each tool call the agent makes, each
-grading decision, and where results were saved. On the terminal the logs
-are coloured (via the rich library): green for passes, red for failures,
-cyan for tool calls, magenta for the with and without arms, yellow for case
-names. The same lines go to `logs/<script>.log` as plain text.
+grading decision, and where results were saved. In the notebook the log
+lines are coloured (via the rich library): green for passes, red for
+failures, cyan for tool calls, magenta for the with and without arms,
+yellow for case names. The same lines go to `logs/<chapter>.log` as plain
+text. Set `SKILL_EVAL_LOG=debug` to also see full prompts, tool inputs and
+judge replies. The tables at the end of each chapter are the results; the
+log lines are how they came about.
 
-The output has landmarks so you can find things: a labelled rule opens each
-phase and each case, so one run's tool calls do not blur into the next; the
-results come as tables; and the one number to take away sits in a box at
-the end, green when it is good news and red when it is not. Logs go to
-stderr and results to stdout, so `python 06_ab_comparison.py > results.txt`
-keeps the tables and drops the play-by-play. Set `SKILL_EVAL_LOG=debug` to also see full prompts,
-tool inputs and judge replies. The printed tables at the end are the
-results; the log lines are how they came about.
-
-Each live run costs a real agent turn. The defaults are tiny (four cases,
-one or two reps) so a full pass stays cheap. `09_statistics.py` will tell
-you, correctly, that eight pairs cannot resolve a twenty-point effect. That
-is the lesson, not a bug: raise `REPS` when you need a number you can defend.
-
-## Words the files use
+## Words the notebook uses
 
 - An arm is one side of a comparison: the with-skill arm and the
   without-skill arm.
@@ -152,17 +148,18 @@ already knows (plain Conventional Commits) shows almost no lift, so you
 learn nothing from the A/B. The rule is: make the task not answerable from
 memory.
 
-Every rule in the skill maps to an eval: the format rules to
-`commit_message_checks.py`, the "why not what" rule to the judge, the "read
-the diff first" step and the git prohibition to the trajectory eval.
+Every rule in the skill maps to an eval: the format rules to the
+interlude's checks, the "why not what" rule to the judge, the "read the
+diff first" step and the git prohibition to the trajectory eval.
 
 ## Fixtures
 
 - `fixtures/diffs/` are the four inputs, each with a known right type and scope.
 - `fixtures/bad_skills/sneaky-helper/` is a deliberately hostile and
-  malformed skill so 01 and 02 have a known-bad case. Do not install it.
+  malformed skill so chapters one and two have a known-bad case. Do not
+  install it.
 - `fixtures/catalog/` are three decoy skills that overlap with ours on
-  vocabulary, so 03 has something to collide with.
+  vocabulary, so chapter three has something to collide with.
 
 ## What every good eval setup agrees on
 
@@ -178,60 +175,62 @@ The same handful of rules keeps coming back, whoever builds the harness.
 4. Grade the end state and the tool log, not the transcript's narration.
 5. Keep the skill files physically absent from the baseline workspace. A
    flag is not enough; the agent can go and read them.
-6. Save every raw row. 09 and 11 re-read what 06 saved, 10 re-reads what
-   04, 05 and 06 saved, and 07 grades 06's saved outputs, so none of them
-   pays for a new agent run.
+6. Save every raw row. Chapters nine and eleven re-read what six saved,
+   ten re-reads what four, five and six saved, and seven grades six's
+   saved outputs, so none of them pays for a new agent run.
 
 One thing worth knowing before you start: published benchmarks put the
 average software engineering skill at a few points of lift, and find that
 most add nothing measurable. If your A/B says "placebo", the eval may be
 working fine.
 
-## What the sample runs found
+## What the stored run found
 
-Every file runs on its own. The offline ones (07, 07b, 09, 10, 11) analyse
-rows that a live script saved to `results/`; when those rows are missing
-they run the producing script first, then continue. `results/` is not
-committed (it is in `.gitignore`, next to `.env`), so the first offline
-file you run will spend the agent runs to fill it, and every one after that
-reuses them. That is the habit the course teaches: pay for agent runs once,
-analyse them as often as you like. The first full pass surfaced four things
-worth knowing before you run your own.
+The outputs stored in the notebook come from one pass, top to bottom, in
+about nine minutes. The four chapters that start the agent spent a little
+under three dollars between them, most of it in chapter four, and the
+judge in chapter seven added a few cents. Five things are worth knowing
+before you run your own.
 
-- The offline routing test caught a real vocabulary gap. "summarise these
-  changes for git" routed to the git-help decoy because the description
-  never said "changes". Adding the word fixed it. The live trigger eval then
-  scored precision 1.00 and recall 1.00 over 14 runs.
-- The A/B lift was +1.00 over 8 pairs (with skill 8/8, without 0/8). The
-  baseline never produced the Refs trailer or the fence, which is the point
-  of a made-up house style: the model cannot know it. The bootstrap interval
-  is tight only because the effect is total; with 8 pairs the noise floor is
-  about 0.35.
-- An earlier version of the judge had a
-  third assertion, "no commentary outside the commit message", and it
-  failed 7 of 8 with-skill outputs. Reading those outputs showed the judge
-  counting the ```text fence itself as commentary. The assertion was
-  replaced, and the lesson stayed in a comment at the top of the file:
-  spot-check the failures, because some of them are grader bugs.
-- The trajectory eval found a boundary the skill does not hold. When the
-  user says "go ahead and commit them", the agent loads the skill, then runs
-  `git commit` anyway. The skill's rule 7 is not strong enough against a
-  direct request. That is a finding about the skill, and the eval that
-  found it is the only one of the eleven that could have.
-
-The efficiency eval classifies the skill as a TRADEOFF: pass rate up from 0
-to 1, cost roughly doubled. The cost comes from turns, not from the
-skill body: a with-skill run takes three turns (load the skill, read the
-result, answer) where the baseline takes one, and each turn re-reads the
-whole context.
+- The offline routing test once caught a real vocabulary gap. "summarise
+  these changes for git" routed to the git-help decoy because the
+  description never said "changes". Adding the word fixed it. The live
+  trigger eval now scores precision 1.00 and recall 1.00 over 14 runs, and
+  Jev agrees on every prompt with a probability of 0.00 on ours for the
+  ones that belong elsewhere.
+- The A/B lift is +1.00 over 8 pairs (with skill 8/8, without 0/8). The
+  baseline never produced the Refs trailer or the fence, which is the
+  point of a made-up house style: the model cannot know it. Chapter nine
+  calls the result real, and adds that at 8 pairs anything under about
+  0.35 would have been noise.
+- An earlier version of the judge had a fourth assertion, "no commentary
+  outside the commit message", and it failed 7 of 8 with-skill outputs.
+  Reading those outputs showed the judge counting the ```text fence itself
+  as commentary. The assertion was dropped, and the lesson stayed in the
+  chapter's opening: spot-check the failures, because some of them are
+  grader bugs. Both markers now pick the with-skill answer 8 times out of 8
+  and never contradict themselves.
+- The trajectory eval is the chapter that varies most from run to run. In
+  the stored run, the agent asked to "go ahead and commit them" wrote the
+  message, quoted the skill's rule 7 back at the user and held off, so the
+  limit held. An earlier run committed anyway. What failed this time was
+  the order: the agent ran `git status` before it loaded the skill, so the
+  "load the skill, then work" sequence the skill assumes is not what
+  happened. One case of two scored full marks. No other chapter can see
+  either of those things.
+- The efficiency eval classifies the skill as a TRADEOFF: pass rate up
+  from 0 to 1, bill up by about a quarter. The extra cost comes from turns,
+  not from the skill body. A with-skill run takes three turns (load the
+  skill, read the result, answer) where the baseline takes one, and each
+  turn re-reads the whole context.
 
 ## Swapping in your own skill
 
-Point `SKILL_DIR` in `skill_eval_common.py` at your folder, rewrite
-`commit_message_checks.py` with checks and cases for your skill, and replace
-the fixtures. Then edit the prompts that are specific to commit messages:
-the positive and negative prompts and the decoy catalog in
-`03_routing_offline.py`, the negative prompts in `04_trigger_eval.py`, the
-assertions at the top of `07_llm_judge.py`, and the trajectory checks in
-`08_trajectory_eval.py`. Files 01, 02, 05, 06, 09, 10 and 11 need no
-changes.
+Set `eval_kit.SKILL_DIR` in the notebook's config section to your folder,
+rewrite `commit_message_checks.py` with checks and cases for your skill,
+and replace the fixtures. Then edit the prompts that are specific to commit
+messages: the positive and negative prompts and the decoy catalog in
+chapters three and three and a half, the negative prompts in chapter four,
+the assertions at the top of chapter seven and the questions at the top of
+seven and a half, and the trajectory cases in chapter eight. Chapters one,
+two, five, six, nine, ten and eleven need no changes.

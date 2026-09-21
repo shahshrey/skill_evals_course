@@ -1,33 +1,24 @@
-"""
-An interlude: the ruler everyone else borrows.
+"""Deterministic checks and test cases for the commit-message skill.
 
-Not a chapter. This is the measuring stick that 05, 06, 08 and 10 all pick
-up. It lives in one place so four scripts cannot quietly disagree about what
+These are the rules from ``skills/commit-message/SKILL.md`` expressed as
+ordinary Python functions. Text in, pass-or-fail out. No AI anywhere. All
+eleven chapters use the same ruler so they never quietly disagree about what
 a good commit message is.
 
-Every check here is an ordinary function. Text in, pass or fail out. Same
-answer every time, for ever. No AI anywhere. That last part is what makes
-them worth having. They are free. They are instant. They never wake up in a
-different mood. Later you will meet a marker that does, and you will be glad
-these exist to check it against.
-
-Each check reports its own name and a short note on what it saw. So a report
-here can say "subject_max_50 failed: 61 characters" rather than "score 0.7".
-One of those tells you which line to edit. The other gives you a number and
-wishes you luck.
+Import with ``from commit_message_checks import *``.
 """
-
-from __future__ import annotations
-
 import re
 
 from pydantic import BaseModel, Field
 
-# Lifted straight out of the Rules section of skills/commit-message/SKILL.md.
+# ---------------------------------------------------------------------------
+# Rules — lifted straight from the skill's specification.
 # Edit the skill and you have to edit these too. Otherwise you are marking
-# this week's work against last week's rules. 05_deterministic_grading.py
-# catches you. It starts by feeding these checks a message known to be
-# perfect, and stops dead if they reject it.
+# this week's work against last week's rules. Chapter five catches you: it
+# starts by feeding these checks a message known to be perfect, and stops
+# dead if any check fails.
+# ---------------------------------------------------------------------------
+
 ALLOWED_TYPES = {"feat", "fix", "docs", "refactor", "test", "chore"}
 ALLOWED_SCOPES = {"api", "web", "cli", "db", "infra"}
 SUBJECT_MAX_CHARS = 50
@@ -168,12 +159,7 @@ def failed_names(results: list[CheckResult]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# The cases every live test works through.
-#
-# One entry per sample set of changes, paired with the answer a careful
-# engineer would give. The list is short on purpose. Every live run is
-# billed. Four cases, times two sides, times a few attempts, adds up faster
-# than anyone expects the first time.
+# Test cases
 # ---------------------------------------------------------------------------
 
 COMMIT_CASES = [
